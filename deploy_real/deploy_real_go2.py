@@ -19,8 +19,9 @@ from action_manager import ActionManager
 
 
 class Controller:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, use_mujoco: bool = False) -> None:
         self.config = config
+        self.use_mujoco = use_mujoco
         self.remote_controller = RemoteController()
 
         self.policy = torch.jit.load(config.policy_path)
@@ -38,12 +39,14 @@ class Controller:
 
         self.target_dof_pos = config.default_joint_pos.copy()
 
-        self.sc = SportClient()
-        self.sc.SetTimeout(5.0)
-        self.sc.Init()
-        self.msc = MotionSwitcherClient()
-        self.msc.SetTimeout(5.0)
-        self.msc.Init()
+        
+        if not use_mujoco:
+            self.sc = SportClient()
+            self.sc.SetTimeout(5.0)
+            self.sc.Init()
+            self.msc = MotionSwitcherClient()
+            self.msc.SetTimeout(5.0)
+            self.msc.Init()
 
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = unitree_go_msg_dds__LowState_()
@@ -54,7 +57,8 @@ class Controller:
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
 
-        self.wait_for_low_state()
+        if not use_mujoco:
+            self.wait_for_low_state()
 
         init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
 
@@ -82,45 +86,69 @@ class Controller:
             time.sleep(1)
         print("Successfully shut down the operation control service.")
 
-    def zero_torque_state(self):
-        print("Enter zero torque state.")
-        print("Waiting for the start signal...")
-        while self.remote_controller.button[KeyMap.start] != 1:
-            create_zero_cmd(self.low_cmd)
-            self.send_cmd(self.low_cmd)
-            time.sleep(self.config.control_dt)
+    # def zero_torque_state(self):
+    #     print("Enter zero torque state.")
+    #     print("Waiting for the start signal...")
+    #     while self.remote_controller.button[KeyMap.start] != 1:
+    #         create_zero_cmd(self.low_cmd)
+    #         self.send_cmd(self.low_cmd)
+    #         time.sleep(self.config.control_dt)
 
     def move_to_default_pos(self):
         print("Moving to default pos.")
-        total_time = 2
-        num_step = int(total_time / self.config.control_dt)
+        create_zero_cmd(self.low_cmd)
+        self.send_cmd(self.low_cmd)
+        time.sleep(self.config.control_dt)
+        kps = self.config.fixstand_kp
+        kds = self.config.fixstand_kd
+        ts = self.config.fixstand_ts
+        qs = self.config.fixstand_qs
+        dof_size = len(self.config.joint_ids_map)
 
-        dof_idx = self.config.joint_ids_map
-        kps = self.config.stiffness
-        kds = self.config.damping
-        default_pos = self.config.default_joint_pos
-        dof_size = len(dof_idx)
-
-        init_dof_pos = np.zeros(dof_size, dtype=np.float32)
+        # Capture current position as first waypoint
+        q0 = np.zeros(dof_size, dtype=np.float32)
         for i in range(dof_size):
-            init_dof_pos[i] = self.low_state.motor_state[dof_idx[i]].q
+            q0[i] = self.low_state.motor_state[i].q
+        print("Current position captured as first waypoint:", q0)
+        qs[0] = q0.tolist()
 
-        for i in range(num_step):
-            alpha = i / num_step
+        t0 = time.time()
+
+        while True:
+            t = time.time() - t0
+            q = self._linear_interpolate(t, ts, qs)
+
             for j in range(dof_size):
-                motor_idx = dof_idx[j]
-                target_pos = default_pos[j]
-                self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
-                self.low_cmd.motor_cmd[motor_idx].qd = 0
-                self.low_cmd.motor_cmd[motor_idx].kp = kps[j]
-                self.low_cmd.motor_cmd[motor_idx].kd = kds[j]
-                self.low_cmd.motor_cmd[motor_idx].tau = 0
+                self.low_cmd.motor_cmd[j].q = q[j]
+                self.low_cmd.motor_cmd[j].qd = 0
+                self.low_cmd.motor_cmd[j].kp = kps[j]
+                self.low_cmd.motor_cmd[j].kd = kds[j]
+                self.low_cmd.motor_cmd[j].tau = 0
             self.send_cmd(self.low_cmd)
+
+            if t >= ts[-1]:
+                break
             time.sleep(self.config.control_dt)
-            
+
         while self.remote_controller.button[KeyMap.A] != 1:
             self.send_cmd(self.low_cmd)
             time.sleep(self.config.control_dt)
+
+    def _linear_interpolate(self, t, ts, qs):
+        if t <= ts[0]:
+            return np.array(qs[0], dtype=np.float32)
+        if t >= ts[-1]:
+            return np.array(qs[-1], dtype=np.float32)
+
+        for i in range(len(ts) - 1):
+            if t >= ts[i] and t <= ts[i + 1]:
+                alpha = (t - ts[i]) / (ts[i + 1] - ts[i])
+                result = []
+                for j in range(len(qs[i])):
+                    result.append(qs[i][j] * (1 - alpha) + qs[i + 1][j] * alpha)
+                return np.array(result, dtype=np.float32)
+
+        return np.array(qs[-1], dtype=np.float32)
 
     def _build_raw_state(self):
         class RawState:
@@ -163,6 +191,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("net", type=str, help="network interface")
     parser.add_argument("config", type=str, help="config file name in the configs folder", default="g1.yaml")
+    parser.add_argument("--mujoco", action="store_true", help="use mujoco simulation")
     args = parser.parse_args()
 
     config_path = f"deploy_real/configs/{args.config}"
@@ -170,11 +199,12 @@ if __name__ == "__main__":
 
     ChannelFactoryInitialize(0, args.net)
 
-    controller = Controller(config)
+    controller = Controller(config, use_mujoco=args.mujoco)
 
-    controller.shut_down_control_service()
+    if not args.mujoco:
+        controller.shut_down_control_service()
+        # controller.zero_torque_state()
 
-    controller.zero_torque_state()
 
     controller.move_to_default_pos()
 

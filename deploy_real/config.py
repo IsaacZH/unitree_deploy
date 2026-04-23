@@ -29,4 +29,10 @@ class Config:
             self.actions = config["actions"]
             self.encoder_input = config["encoder_input"]
             self.policy_input = config["policy_input"]
+
+            # FixStand config
+            self.fixstand_kp = config["FixStand"]["kp"]
+            self.fixstand_kd = config["FixStand"]["kd"]
+            self.fixstand_ts = config["FixStand"]["ts"]
+            self.fixstand_qs = config["FixStand"]["qs"]
             
