@@ -7,19 +7,10 @@ class ActionManager:
         self._build_action_definitions()
 
     def _build_action_definitions(self):
-        for action_type, action_config in self.config.actions.items():
-            self.action_type = action_type
+        for _, action_config in self.config.actions.items():
             self.action_clip = action_config["clip"]
             self.action_scale = action_config["scale"]
-            self.action_offset = np.array(action_config["offset"], dtype=np.float32)
-            self.joint_ids = action_config.get("joint_ids")
-            self.joint_names = action_config.get("joint_names", [".*"])
             break
-
-    def _apply_clip_scale(self, values, clip, scale):
-        values = np.clip(values, clip[0], clip[1])
-        values = values * np.array(scale, dtype=np.float32)
-        return values
 
     def forward(self, policy_action):
         action = policy_action.copy()

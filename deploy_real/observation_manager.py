@@ -10,7 +10,7 @@ class ObservationManager:
         self.encoder = encoder
 
         self.use_encoder = config.use_encoder
-        self.history_length = config.encoder_input.get("history_length", 6)
+        self.history_length = config.encoder_input.get("history_length")
 
         self._build_obs_definitions()
 

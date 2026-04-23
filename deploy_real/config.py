@@ -21,7 +21,6 @@ class Config:
 
             # Manager-based config
             self.use_encoder = config["use_encoder"]
-            self.step_dt = config["step_dt"]
             self.stiffness = config["stiffness"]
             self.damping = config["damping"]
 

@@ -48,10 +48,10 @@ class Controller:
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = unitree_go_msg_dds__LowState_()
 
-        self.lowcmd_publisher_ = ChannelPublisher(config.lowcmd_topic, LowCmdGo)
+        self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmdGo)
         self.lowcmd_publisher_.Init()
 
-        self.lowstate_subscriber = ChannelSubscriber(config.lowstate_topic, LowStateGo)
+        self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
 
         self.wait_for_low_state()
