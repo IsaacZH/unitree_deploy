@@ -16,6 +16,7 @@ from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
 from action_manager import ActionManager
+from state_machine import StateMachine
 
 
 class Controller:
@@ -64,6 +65,9 @@ class Controller:
 
         self.obs_manager.reset()
 
+        # Initialize state machine
+        self.state_machine = StateMachine(self, initial_state_name="move_to_default_pos")
+
     def LowStateGoHandler(self, msg: LowStateGo):
         self.low_state = msg
         self.remote_controller.set(self.low_state.wireless_remote)
@@ -86,104 +90,6 @@ class Controller:
             time.sleep(1)
         print("Successfully shut down the operation control service.")
 
-    # def zero_torque_state(self):
-    #     print("Enter zero torque state.")
-    #     print("Waiting for the start signal...")
-    #     while self.remote_controller.button[KeyMap.start] != 1:
-    #         create_zero_cmd(self.low_cmd)
-    #         self.send_cmd(self.low_cmd)
-    #         time.sleep(self.config.control_dt)
-
-    def move_to_default_pos(self):
-        print("Moving to default pos.")
-        create_zero_cmd(self.low_cmd)
-        self.send_cmd(self.low_cmd)
-        time.sleep(self.config.control_dt)
-        kps = self.config.fixstand_kp
-        kds = self.config.fixstand_kd
-        ts = self.config.fixstand_ts
-        qs = self.config.fixstand_qs
-        dof_size = len(self.config.joint_ids_map)
-
-        # Capture current position as first waypoint
-        q0 = np.zeros(dof_size, dtype=np.float32)
-        for i in range(dof_size):
-            q0[i] = self.low_state.motor_state[i].q
-        print("Current position captured as first waypoint:", q0)
-        qs[0] = q0.tolist()
-
-        t0 = time.time()
-
-        while True:
-            t = time.time() - t0
-            q = self._linear_interpolate(t, ts, qs)
-
-            for j in range(dof_size):
-                self.low_cmd.motor_cmd[j].q = q[j]
-                self.low_cmd.motor_cmd[j].qd = 0
-                self.low_cmd.motor_cmd[j].kp = kps[j]
-                self.low_cmd.motor_cmd[j].kd = kds[j]
-                self.low_cmd.motor_cmd[j].tau = 0
-            self.send_cmd(self.low_cmd)
-
-            if t >= ts[-1]:
-                break
-            time.sleep(self.config.control_dt)
-
-        while self.remote_controller.button[KeyMap.A] != 1:
-            self.send_cmd(self.low_cmd)
-            time.sleep(self.config.control_dt)
-
-    def _linear_interpolate(self, t, ts, qs):
-        if t <= ts[0]:
-            return np.array(qs[0], dtype=np.float32)
-        if t >= ts[-1]:
-            return np.array(qs[-1], dtype=np.float32)
-
-        for i in range(len(ts) - 1):
-            if t >= ts[i] and t <= ts[i + 1]:
-                alpha = (t - ts[i]) / (ts[i + 1] - ts[i])
-                result = []
-                for j in range(len(qs[i])):
-                    result.append(qs[i][j] * (1 - alpha) + qs[i + 1][j] * alpha)
-                return np.array(result, dtype=np.float32)
-
-        return np.array(qs[-1], dtype=np.float32)
-
-    def _build_raw_state(self):
-        class RawState:
-            pass
-        raw = RawState()
-        raw.remote = self.remote_controller
-        raw.imu = self.low_state.imu_state
-        raw.motor_state = self.low_state.motor_state
-        raw.last_action = self.obs_manager.last_action
-        return raw
-
-    def run(self):
-        raw_state = self._build_raw_state()
-
-        current_obs, encoder_output = self.obs_manager.forward(raw_state)
-
-        policy_obs = self.policy_input_manager.forward(current_obs, encoder_output)
-        obs_tensor = torch.from_numpy(policy_obs.copy()).unsqueeze(0)
-
-        action = self.actor(obs_tensor).detach().numpy().squeeze()
-
-        target_dof_pos = self.action_manager.forward(action)
-
-        for i, motor_idx in enumerate(self.config.joint_ids_map):
-            self.low_cmd.motor_cmd[motor_idx].q = target_dof_pos[i]
-            self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = self.config.stiffness[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = self.config.damping[i]
-            self.low_cmd.motor_cmd[motor_idx].tau = 0
-
-        self.obs_manager.set_last_action(action)
-        self.send_cmd(self.low_cmd)
-
-        time.sleep(self.config.control_dt)
-
 
 if __name__ == "__main__":
     import argparse
@@ -203,19 +109,9 @@ if __name__ == "__main__":
 
     if not args.mujoco:
         controller.shut_down_control_service()
-        # controller.zero_torque_state()
 
+    # Run state machine
+    while controller.state_machine.execute():
+        pass
 
-    controller.move_to_default_pos()
-
-    while True:
-        try:
-            controller.run()
-            if controller.remote_controller.button[KeyMap.select] == 1:
-                break
-        except KeyboardInterrupt:
-            break
-
-    create_damping_cmd(controller.low_cmd)
-    controller.send_cmd(controller.low_cmd)
     print("Exit")
