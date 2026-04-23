@@ -1,7 +1,6 @@
 import numpy as np
 import time
 import torch
-import torch.nn.functional as F
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
@@ -12,39 +11,39 @@ from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwi
 from unitree_sdk2py.go2.sport.sport_client import SportClient
 
 from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_go
-from common.rotation_helper import get_gravity_orientation
 from common.remote_controller import RemoteController, KeyMap
 from config import Config
+from terms import TERMS
+from observation_manager import ObservationManager, PolicyInputManager
+from action_manager import ActionManager
+
 
 class Controller:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.remote_controller = RemoteController()
 
-        # 加载actor和encoder
         self.policy = torch.jit.load(config.policy_path)
-        # 分离出actor和encoder
         self.actor = self.policy.actor
         self.encoder = self.policy.estimator
 
-        # Initializing process variables
-        self.qj = np.zeros(config.num_actions, dtype=np.float32)
-        self.dqj = np.zeros(config.num_actions, dtype=np.float32)
-        self.action = np.zeros(config.num_actions, dtype=np.float32)
-        self.target_dof_pos = config.default_angles.copy()
-        
-        self.current_obs = np.zeros(config.num_obs_current, dtype=np.float32)
-        self.obs_encoder = np.zeros(config.num_obs_encoder, dtype=np.float32) # 编码器网络输入
-        self.obs = np.zeros(config.num_obs, dtype=np.float32) # 策略网络输入
-        self.sc = SportClient()  
+        self.obs_manager = ObservationManager(config, TERMS, self.encoder)
+        self.policy_input_manager = PolicyInputManager(
+            config,
+            self.obs_manager.obs_offsets,
+            self.obs_manager.obs_sizes,
+            self.obs_manager.obs_names
+        )
+        self.action_manager = ActionManager(config)
+
+        self.target_dof_pos = config.default_joint_pos.copy()
+
+        self.sc = SportClient()
         self.sc.SetTimeout(5.0)
         self.sc.Init()
         self.msc = MotionSwitcherClient()
         self.msc.SetTimeout(5.0)
         self.msc.Init()
-        
-        self.cmd = np.array([0.0, 0, 0])
-        self.counter = 0
 
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = unitree_go_msg_dds__LowState_()
@@ -55,11 +54,11 @@ class Controller:
         self.lowstate_subscriber = ChannelSubscriber(config.lowstate_topic, LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
 
-        # wait for the subscriber to receive data
         self.wait_for_low_state()
 
-        # Initialize the command msg
         init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
+
+        self.obs_manager.reset()
 
     def LowStateGoHandler(self, msg: LowStateGo):
         self.low_state = msg
@@ -74,13 +73,12 @@ class Controller:
             time.sleep(self.config.control_dt)
         print("Successfully connected to the robot.")
 
-    # 关闭运控服务，否则LowCmd指令会被覆盖
     def shut_down_control_service(self):
-        status, result = self.msc.CheckMode()
+        _, result = self.msc.CheckMode()
         while result['name']:
             self.sc.StandDown()
             self.msc.ReleaseMode()
-            status, result = self.msc.CheckMode()
+            _, result = self.msc.CheckMode()
             time.sleep(1)
         print("Successfully shut down the operation control service.")
 
@@ -94,22 +92,19 @@ class Controller:
 
     def move_to_default_pos(self):
         print("Moving to default pos.")
-        # move time 2s
         total_time = 2
         num_step = int(total_time / self.config.control_dt)
-        
-        dof_idx = self.config.leg_joint2motor_idx
-        kps = self.config.kps
-        kds = self.config.kds
-        default_pos = self.config.default_angles
+
+        dof_idx = self.config.joint_ids_map
+        kps = self.config.stiffness
+        kds = self.config.damping
+        default_pos = self.config.default_joint_pos
         dof_size = len(dof_idx)
-        
-        # record the current pos
+
         init_dof_pos = np.zeros(dof_size, dtype=np.float32)
         for i in range(dof_size):
             init_dof_pos[i] = self.low_state.motor_state[dof_idx[i]].q
-        
-        # move to default pos
+
         for i in range(num_step):
             alpha = i / num_step
             for j in range(dof_size):
@@ -122,60 +117,41 @@ class Controller:
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.config.control_dt)
+            
+        while self.remote_controller.button[KeyMap.A] != 1:
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.config.control_dt)
+
+    def _build_raw_state(self):
+        class RawState:
+            pass
+        raw = RawState()
+        raw.remote = self.remote_controller
+        raw.imu = self.low_state.imu_state
+        raw.motor_state = self.low_state.motor_state
+        raw.last_action = self.obs_manager.last_action
+        return raw
 
     def run(self):
-        self.counter += 1
-        for i in range(len(self.config.leg_joint2motor_idx)):
-            self.qj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].q
-            self.dqj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].dq
+        raw_state = self._build_raw_state()
 
-        quat = self.low_state.imu_state.quaternion
-        ang_vel = np.array([self.low_state.imu_state.gyroscope], dtype=np.float32)
+        current_obs, encoder_output = self.obs_manager.forward(raw_state)
 
-        # create observation
-        gravity_orientation = get_gravity_orientation(quat)
-        qj_obs = self.qj.copy()
-        dqj_obs = self.dqj.copy()
-        qj_obs = (qj_obs - self.config.default_angles) * self.config.dof_pos_scale
-        dqj_obs = dqj_obs * self.config.dof_vel_scale
-        ang_vel = ang_vel * self.config.ang_vel_scale
+        policy_obs = self.policy_input_manager.forward(current_obs, encoder_output)
+        obs_tensor = torch.from_numpy(policy_obs.copy()).unsqueeze(0)
 
-        period = 0.8
-        count = self.counter * self.config.control_dt
-        phase = count % period / period
+        action = self.actor(obs_tensor).detach().numpy().squeeze()
 
-        self.cmd[0] = self.remote_controller.ly
-        self.cmd[1] = self.remote_controller.lx * -1
-        self.cmd[2] = self.remote_controller.rx * -1
+        target_dof_pos = self.action_manager.forward(action)
 
-        num_actions = self.config.num_actions
-        self.current_obs[:3] = self.cmd * self.config.cmd_scale
-        self.current_obs[3:6] = ang_vel
-        self.current_obs[6:9] = gravity_orientation
-        self.current_obs[9 : 9 + num_actions] = qj_obs
-        self.current_obs[9 + num_actions : 9 + num_actions * 2] = dqj_obs
-        self.current_obs[9 + num_actions * 2 : 9 + num_actions * 3] = self.action
-        self.obs_encoder = np.concatenate((self.current_obs[:config.num_obs_current], self.obs_encoder[:-config.num_obs_current]),axis=-1)
-        obs_encoder_tensor = torch.from_numpy(self.obs_encoder.copy()).unsqueeze(0)
-        predict_tensor = self.encoder(obs_encoder_tensor)
-        vel_tensor, latent_tensor = predict_tensor[..., :3], predict_tensor[..., 3:]
-        latent_tensor = F.normalize(latent_tensor, dim=-1, p=2)
-
-        obs_tensor = torch.cat((obs_encoder_tensor[:,:config.num_obs_current], vel_tensor, latent_tensor), dim=-1)
-        self.action = self.actor(obs_tensor).detach().numpy().squeeze()
-        
-        target_dof_pos = self.config.default_angles + self.action * self.config.action_scale
-
-        # Build low cmd
-        for i in range(len(self.config.leg_joint2motor_idx)):
-            motor_idx = self.config.leg_joint2motor_idx[i]
+        for i, motor_idx in enumerate(self.config.joint_ids_map):
             self.low_cmd.motor_cmd[motor_idx].q = target_dof_pos[i]
             self.low_cmd.motor_cmd[motor_idx].qd = 0
-            self.low_cmd.motor_cmd[motor_idx].kp = self.config.kps[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = self.config.kds[i]
+            self.low_cmd.motor_cmd[motor_idx].kp = self.config.stiffness[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self.config.damping[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
 
-        # send the command
+        self.obs_manager.set_last_action(action)
         self.send_cmd(self.low_cmd)
 
         time.sleep(self.config.control_dt)
@@ -189,32 +165,27 @@ if __name__ == "__main__":
     parser.add_argument("config", type=str, help="config file name in the configs folder", default="g1.yaml")
     args = parser.parse_args()
 
-    # Load config
     config_path = f"deploy_real/configs/{args.config}"
     config = Config(config_path)
 
-    # Initialize DDS communication
     ChannelFactoryInitialize(0, args.net)
 
     controller = Controller(config)
 
     controller.shut_down_control_service()
 
-    # Enter the zero torque state, press the start key to continue executing
     controller.zero_torque_state()
 
-    # Move to the default position
     controller.move_to_default_pos()
 
     while True:
         try:
             controller.run()
-            # Press the select key to exit
             if controller.remote_controller.button[KeyMap.select] == 1:
                 break
         except KeyboardInterrupt:
             break
-    # Enter the damping state
+
     create_damping_cmd(controller.low_cmd)
     controller.send_cmd(controller.low_cmd)
     print("Exit")
