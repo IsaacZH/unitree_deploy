@@ -9,30 +9,30 @@ class Config:
 
             self.control_dt = config["control_dt"]
 
-            self.weak_motor = []
-            if "weak_motor" in config:
-                self.weak_motor = config["weak_motor"]
+            self.weak_motor = config.get("weak_motor", [])
 
             self.lowcmd_topic = config["lowcmd_topic"]
             self.lowstate_topic = config["lowstate_topic"]
 
             self.policy_path = config["policy_path"]
 
-            self.leg_joint2motor_idx = config["leg_joint2motor_idx"]
-            self.kps = config["kps"]
-            self.kds = config["kds"]
-            self.default_angles = np.array(config["default_angles"], dtype=np.float32)
+            self.default_joint_pos = np.array(config["default_joint_pos"], dtype=np.float32)
+            self.joint_ids_map = config["joint_ids_map"]
 
-            self.ang_vel_scale = config["ang_vel_scale"]
-            self.dof_pos_scale = config["dof_pos_scale"]
-            self.dof_vel_scale = config["dof_vel_scale"]
-            self.action_scale = config["action_scale"]
-            self.cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
+            # Manager-based config
+            self.use_encoder = config["use_encoder"]
+            self.stiffness = config["stiffness"]
+            self.damping = config["damping"]
 
-            self.num_actions = config["num_actions"]
-            self.num_obs_current = config["num_obs_current"]
-            self.num_obs_encoder = config["num_obs_encoder"]
-            self.num_obs = config["num_obs"]
+            # Commands, actions, encoder_input, policy_input from YAML
+            self.commands = config["commands"]
+            self.actions = config["actions"]
+            self.encoder_input = config["encoder_input"]
+            self.policy_input = config["policy_input"]
 
-            
+            # FixStand config
+            self.fixstand_kp = config["FixStand"]["kp"]
+            self.fixstand_kd = config["FixStand"]["kd"]
+            self.fixstand_ts = config["FixStand"]["ts"]
+            self.fixstand_qs = config["FixStand"]["qs"]
             
