@@ -11,9 +11,6 @@ class Config:
 
             self.weak_motor = config.get("weak_motor", [])
 
-            self.lowcmd_topic = config["lowcmd_topic"]
-            self.lowstate_topic = config["lowstate_topic"]
-
             self.policy_path = config["policy_path"]
 
             self.default_joint_pos = np.array(config["default_joint_pos"], dtype=np.float32)

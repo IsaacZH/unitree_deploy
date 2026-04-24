@@ -5,8 +5,7 @@ damping: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
 default_joint_pos: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
 
 control_dt: 0.02
-lowcmd_topic: "rt/lowcmd"
-lowstate_topic: "rt/lowstate"
+
 policy_path: "pre_train/himloco_lab/policy.pt"
 
 commands:

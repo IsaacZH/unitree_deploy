@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("net", type=str, help="network interface")
-    parser.add_argument("config", type=str, help="config file name in the configs folder", default="g1.yaml")
+    parser.add_argument("config", type=str, help="config file name in the configs folder")
     parser.add_argument("--mujoco", action="store_true", help="use mujoco simulation")
     args = parser.parse_args()
 
