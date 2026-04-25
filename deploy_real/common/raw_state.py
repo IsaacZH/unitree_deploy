@@ -10,4 +10,5 @@ class RawState:
     high_state: Any
     navigation_manager: Any
     last_action: Any
+    nav_last_action: Any
     depth_feature: Any

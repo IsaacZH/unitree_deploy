@@ -26,6 +26,9 @@ class RunState(BaseState):
 
         # Get observations from encoder and current state
         current_obs, encoder_output = self.controller.obs_manager.forward(raw_state)
+        if raw_state.nav_last_action is not None:
+            self.controller.nav_last_action = raw_state.nav_last_action.copy()
+        self.controller.publish_nav_debug(raw_state)
 
         # Assemble policy input from observations
         policy_obs = self.controller.policy_input_manager.forward(current_obs, encoder_output)
@@ -73,6 +76,7 @@ class RunState(BaseState):
             high_state=self.controller.high_state,
             navigation_manager=self.controller.navigation_manager,
             last_action=self.controller.obs_manager.last_action,
+            nav_last_action=getattr(self.controller, "nav_last_action", None),
             depth_feature=(
             self.controller.depth_observer.get_latest()
             if self.controller.depth_observer is not None

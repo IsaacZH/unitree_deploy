@@ -16,6 +16,7 @@ class NavigationCommandManager:
         self._switch_button_id = self._resolve_switch_button(self._cfg["switch_button"])
 
         self._policy = None
+        self._policy_expected_obs_dim = None
         self._policy_device = self._cfg["device"]
         self._kp = np.asarray(self._cfg["kp"], dtype=np.float32)
         self._fixed_target = np.asarray(self._cfg["fixed_target_position"], dtype=np.float32)
@@ -42,7 +43,14 @@ class NavigationCommandManager:
             print("[Navigation] No policy_path configured. Using fixed-target proportional command.")
             return
         nav_module = torch.jit.load(policy_path, map_location=self._policy_device)
-        self._policy = nav_module.actor if hasattr(nav_module, "actor") else nav_module
+        self._policy = nav_module
+        self._policy.eval()
+        for p in self._policy.parameters():
+            p.requires_grad_(False)
+        if hasattr(nav_module, "num_image_features") and hasattr(nav_module, "actor_proprioceptive_input_dim"):
+            self._policy_expected_obs_dim = int(nav_module.num_image_features) + int(
+                nav_module.actor_proprioceptive_input_dim
+            )
         print(f"[Navigation] Loaded navigation policy: {policy_path}")
 
     def update_control_source(self, buttons):
@@ -59,6 +67,16 @@ class NavigationCommandManager:
 
     def get_target_position(self):
         return self._fixed_target.copy()
+
+    def set_target_position(self, target):
+        target = np.asarray(target, dtype=np.float32).ravel()
+        if target.shape[0] != 3:
+            raise ValueError(f"target_position must be 3D [x, y, z], got shape {target.shape}")
+        self._fixed_target = target.copy()
+
+    def reset_policy(self):
+        print("[Navigation] Resetting navigation policy.")
+        self._policy.reset()
 
     def _term_value_provider(self, name, raw_state, config):
         return self._terms[name](raw_state, config)
@@ -78,13 +96,20 @@ class NavigationCommandManager:
         target = np.asarray(self.get_target_position(), dtype=np.float32).ravel()
         if target.shape[0] != 3:
             raise ValueError(
-                f"navigation.fixed_target_position must be 3D [x, y, yaw], got shape {target.shape}"
+                f"navigation.fixed_target_position must be 3D [x, y, z], got shape {target.shape}"
             )
 
         if self._policy is not None:
             nav_obs = self.build_navigation_obs(raw_state, config)
+            if self._policy_expected_obs_dim is not None and nav_obs.shape[0] != self._policy_expected_obs_dim:
+                raise ValueError(
+                    "Navigation obs dim mismatch: "
+                    f"built={nav_obs.shape[0]} expected={self._policy_expected_obs_dim}. "
+                    "Please align navigation.policy_input terms with training play export."
+                )
             nav_obs_tensor = torch.from_numpy(nav_obs).unsqueeze(0).to(self._policy_device)
-            nav_cmd = self._policy(nav_obs_tensor).detach().cpu().numpy().squeeze()
+            with torch.inference_mode():
+                nav_cmd = self._policy(nav_obs_tensor).cpu().numpy().squeeze()
         else:
             nav_cmd = self._kp * target[:3]
 

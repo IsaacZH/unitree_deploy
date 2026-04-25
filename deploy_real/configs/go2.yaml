@@ -6,7 +6,7 @@ default_joint_pos: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, 
 
 control_dt: 0.02
 
-policy_path: "pre_train/himloco_lab/policy.pt"
+policy_path: "pre_train/himloco_lab/policy_2025.pt"
 
 depth_camera:
   topic: "rt/depth_image"
@@ -26,12 +26,12 @@ commands:
       heading: null
 
 navigation:
-  enabled: false
+  enabled: true
   switch_button: "X"
-  fixed_target_position: [2.0, 0.0, 0.0]
+  fixed_target_position: [0.0, 5.0, 0.0]
   kp: [0.6, 0.6, 1.0]
   max_speed: [1.5, 1.0, 2.0]
-  policy_path: null
+  policy_path: "pre_train/navigation/policy.pt"
   device: "cpu"
   policy_input:
     base_lin_vel:
@@ -43,7 +43,7 @@ navigation:
     projected_gravity:
       clip: [-100, 100]
       scale: 1.0
-    last_action:
+    nav_last_action:
       clip: [-100, 100]
       scale: 1.0
     target_position:

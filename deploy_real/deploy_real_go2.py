@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import torch
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber
@@ -19,6 +20,8 @@ from common.remote_controller import RemoteController
 from common.depth_image_sub import DepthImageObserver
 from common.keyboard_controller import KeyboardController
 from common.navigation_command_manager import NavigationCommandManager
+from common.nav_debug_dds import NavDebug_, create_nav_debug_message
+from common.nav_target_dds import NavTarget_, create_nav_target_message
 from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
@@ -32,7 +35,6 @@ class Controller:
         self.use_mujoco = use_mujoco
         self.keyboard_mode = keyboard
         self.remote_controller = RemoteController()
-        self.keyboard_controller = KeyboardController() if self.keyboard_mode else None
 
         self.policy = torch.jit.load(config.policy_path)
         self.actor = self.policy.actor
@@ -46,9 +48,15 @@ class Controller:
             self.obs_manager.obs_names
         )
         self.action_manager = ActionManager(config)
+        self.nav_last_action = np.zeros(3, dtype=np.float32)
 
         self.target_dof_pos = config.default_joint_pos.copy()
         self.navigation_manager = NavigationCommandManager(config.navigation, TERMS)
+        self.keyboard_controller = (
+            KeyboardController(initial_target_position=self.navigation_manager.get_target_position())
+            if self.keyboard_mode
+            else None
+        )
 
         
         if not use_mujoco:
@@ -65,6 +73,10 @@ class Controller:
 
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmdGo)
         self.lowcmd_publisher_.Init()
+        self.nav_debug_publisher_ = ChannelPublisher("rt/nav_debug", NavDebug_)
+        self.nav_debug_publisher_.Init()
+        self.nav_target_publisher_ = ChannelPublisher("rt/nav_target", NavTarget_)
+        self.nav_target_publisher_.Init()
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
@@ -95,6 +107,7 @@ class Controller:
 
         # Initialize state machine
         self.state_machine = StateMachine(self, initial_state_name="move_to_default_pos")
+        self.publish_target_update(self.navigation_manager.get_target_position())
 
     def LowStateGoHandler(self, msg: LowStateGo):
         self.low_state = msg
@@ -107,7 +120,28 @@ class Controller:
     def update_control_input(self):
         if self.keyboard_controller is not None:
             self.keyboard_controller.update_remote(self.remote_controller)
+            target_update = self.keyboard_controller.consume_target_position_update()
+            if target_update is not None:
+                self.navigation_manager.set_target_position(target_update)
+                self.publish_target_update(target_update)
+                print(
+                    "[Navigation] Target updated from keyboard: "
+                    f"({target_update[0]:.3f}, {target_update[1]:.3f}, {target_update[2]:.3f})"
+                )
         self.navigation_manager.update_control_source(self.remote_controller.button)
+
+    def publish_target_update(self, target_world):
+        msg = create_nav_target_message(np.asarray(target_world, dtype=np.float32).ravel())
+        self.nav_target_publisher_.Write(msg)
+
+    def publish_nav_debug(self, raw_state):
+        target_obs = TERMS["target_position"](raw_state, self.config)
+        target_dir = np.asarray(target_obs, dtype=np.float32).ravel()[:3]
+        cmd = getattr(raw_state, "velocity_command", None)
+        if cmd is None:
+            cmd = TERMS["velocity_commands"](raw_state, self.config)
+        msg = create_nav_debug_message(target_dir_b=target_dir, target_speed_b=cmd)
+        self.nav_debug_publisher_.Write(msg)
 
     def close(self):
         if self.keyboard_controller is not None:

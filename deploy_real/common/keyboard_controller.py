@@ -1,5 +1,6 @@
 import time
 import math
+import numpy as np
 import pygame
 
 from common.remote_controller import KeyMap
@@ -8,10 +9,16 @@ from common.remote_controller import KeyMap
 class KeyboardController:
     """Terminal keyboard input for RemoteController-compatible commands."""
 
-    def __init__(self):
+    def __init__(self, initial_target_position=None):
         pygame.init()
         pygame.display.set_caption("Keyboard Controller")
-        self._window = pygame.display.set_mode((480, 120))
+        self._window = pygame.display.set_mode((980, 300))
+        self._font = pygame.font.SysFont("monospace", 30)
+        self._font_small = pygame.font.SysFont("monospace", 24)
+        self._bg_color = (18, 18, 18)
+        self._fg_color = (220, 220, 220)
+        self._accent_color = (120, 220, 120)
+        self._warn_color = (220, 180, 80)
 
         self._harmonic_ramp_time = 0.6
         self._axis_limit = 1.0
@@ -26,15 +33,32 @@ class KeyboardController:
         self._axis_active = {k: False for k in self._axis_keycode}
         self._axis_press_start = {k: 0.0 for k in self._axis_keycode}
         self._button_pulse = [0] * 16
+        self._target_input_active = False
+        self._target_position = (
+            np.asarray(initial_target_position, dtype=np.float32).ravel().copy()
+            if initial_target_position is not None
+            else np.zeros(3, dtype=np.float32)
+        )
+        if self._target_position.shape[0] != 3:
+            self._target_position = np.zeros(3, dtype=np.float32)
+        self._target_updated = False
+        self._target_error = ""
+        self._target_labels = ["X", "Y", "Z"]
+        self._target_text_fields = [f"{v:.3f}" for v in self._target_position]
+        self._target_active_index = 0
+        self._target_input_rects = [
+            pygame.Rect(120 + i * 300, 165, 240, 58) for i in range(3)
+        ]
 
         print(
             "Keyboard control enabled: "
             "[w/s]=forward/back, [a/d]=left/right, [q/e]=yaw, "
-            "[1]=start, [2]=A, [3]=select, [4/x]=X. "
+            "[1]=start, [2]=A, [3]=select, [4/x]=X, [t]=edit target xyz boxes. "
             "Keep the 'Keyboard Controller' window focused."
         )
 
     def close(self):
+        pygame.key.stop_text_input()
         pygame.quit()
 
     def _set_pulse(self, key_id: int):
@@ -60,6 +84,19 @@ class KeyboardController:
         return max(-self._axis_limit, min(self._axis_limit, value))
 
     def _on_keydown(self, keycode):
+        if self._target_input_active:
+            if keycode == pygame.K_RETURN:
+                self._commit_target_fields()
+            elif keycode == pygame.K_ESCAPE:
+                self._cancel_target_input()
+            elif keycode == pygame.K_BACKSPACE:
+                self._target_text_fields[self._target_active_index] = self._target_text_fields[
+                    self._target_active_index
+                ][:-1]
+            elif keycode == pygame.K_TAB:
+                self._target_active_index = (self._target_active_index + 1) % 3
+            return
+
         if keycode == pygame.K_1:
             self._set_pulse(KeyMap.start)
         elif keycode == pygame.K_2:
@@ -71,15 +108,115 @@ class KeyboardController:
         elif keycode == pygame.K_SPACE:
             for key in self._axis_active:
                 self._axis_active[key] = False
+        elif keycode == pygame.K_t:
+            self._start_target_input(active_index=0)
+
+    def _on_text_input(self, text):
+        if not self._target_input_active:
+            return
+        if text and all(ch in "0123456789-+eE." for ch in text):
+            self._target_text_fields[self._target_active_index] += text
+
+    def _start_target_input(self, active_index):
+        self._target_input_active = True
+        self._target_active_index = int(np.clip(active_index, 0, 2))
+        self._target_text_fields = [f"{v:.3f}" for v in self._target_position]
+        self._target_error = ""
+        pygame.key.start_text_input()
+
+    def _cancel_target_input(self):
+        self._target_input_active = False
+        pygame.key.stop_text_input()
+        self._target_error = ""
+
+    def _commit_target_fields(self):
+        try:
+            values = np.asarray([float(s) for s in self._target_text_fields], dtype=np.float32)
+        except ValueError:
+            self._target_error = "Invalid number format"
+            return
+        self._target_position = values
+        self._target_updated = True
+        self._target_input_active = False
+        pygame.key.stop_text_input()
+        self._target_error = ""
+
+    def _on_mouse_buttondown(self, pos):
+        if not self._target_input_active:
+            for i, rect in enumerate(self._target_input_rects):
+                if rect.collidepoint(pos):
+                    self._start_target_input(active_index=i)
+                    return
+            return
+
+        for i, rect in enumerate(self._target_input_rects):
+            if rect.collidepoint(pos):
+                self._target_active_index = i
+                return
+
+    def consume_target_position_update(self):
+        if not self._target_updated:
+            return None
+        self._target_updated = False
+        return self._target_position.copy()
+
+    def _draw_ui(self):
+        self._window.fill(self._bg_color)
+        lines = [
+            ("[w/s][a/d][q/e] move   [1][2][3] buttons   [4/x] nav toggle", self._fg_color),
+            (
+                f"Target xyz = ({self._target_position[0]: .3f}, {self._target_position[1]: .3f}, {self._target_position[2]: .3f})",
+                self._accent_color,
+            ),
+        ]
+        if self._target_input_active:
+            lines.append(("[Enter]=apply [Tab]=next box [Esc]=cancel", self._warn_color))
+        else:
+            lines.append(("[t] edit target xyz | or click input boxes", self._fg_color))
+
+        if self._target_error:
+            lines.append((self._target_error, (255, 120, 120)))
+
+        y = 14
+        for i, (text, color) in enumerate(lines):
+            font = self._font if i < 2 else self._font_small
+            surf = font.render(text, True, color)
+            self._window.blit(surf, (12, y))
+            y += 54 if i < 2 else 40
+
+        for i, rect in enumerate(self._target_input_rects):
+            active = self._target_input_active and i == self._target_active_index
+            border_color = self._warn_color if active else (90, 90, 90)
+            bg_color = (40, 40, 40) if active else (30, 30, 30)
+            pygame.draw.rect(self._window, bg_color, rect, border_radius=8)
+            pygame.draw.rect(self._window, border_color, rect, 3, border_radius=8)
+
+            label = self._font_small.render(self._target_labels[i], True, self._fg_color)
+            self._window.blit(label, (rect.x + 10, rect.y + 15))
+            value_text = self._target_text_fields[i] if self._target_input_active else f"{self._target_position[i]:.3f}"
+            value = self._font_small.render(value_text, True, self._accent_color)
+            self._window.blit(value, (rect.x + 48, rect.y + 15))
+        pygame.display.flip()
 
     def update_remote(self, remote):
         for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.close()
+                raise SystemExit(0)
             if event.type == pygame.KEYDOWN:
                 self._on_keydown(event.key)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                self._on_mouse_buttondown(event.pos)
+            elif event.type == pygame.TEXTINPUT:
+                self._on_text_input(event.text)
 
         now = time.monotonic()
         pressed = pygame.key.get_pressed()
-        self._update_axis_state(now, pressed)
+        if not self._target_input_active:
+            self._update_axis_state(now, pressed)
+        else:
+            for key in self._axis_active:
+                self._axis_active[key] = False
 
         lx = self._harmonic_gain("d", now) - self._harmonic_gain("a", now)
         ly = self._harmonic_gain("w", now) - self._harmonic_gain("s", now)
@@ -92,3 +229,4 @@ class KeyboardController:
         for i in range(16):
             remote.button[i] = self._button_pulse[i]
         self._button_pulse = [0] * 16
+        self._draw_ui()
