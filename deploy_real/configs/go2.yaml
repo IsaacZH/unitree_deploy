@@ -28,9 +28,17 @@ commands:
 navigation:
   enabled: true
   switch_button: "X"
+  command_rate_hz: 5.0
   fixed_target_position: [0.0, 5.0, 0.0]
-  kp: [0.6, 0.6, 1.0]
-  max_speed: [1.5, 1.0, 2.0]
+  use_raw_actions: true
+  action_scale: [1.0, 1.0, 1.0]
+  action_offset: [0.0, 0.0, 0.0]
+  policy_distr_type: "gaussian"
+  policy_scaling: [2.0, 1.0, 2.0]
+  policy_bias: [0.0, 0.0, 0.0]
+  low_pass_filter:
+    enabled: true
+    alpha: [0.5, 0.5, 0.5]
   policy_path: "pre_train/navigation/policy.pt"
   device: "cpu"
   policy_input:

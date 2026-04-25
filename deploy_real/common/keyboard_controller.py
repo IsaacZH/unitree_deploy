@@ -46,6 +46,10 @@ class KeyboardController:
         self._target_labels = ["X", "Y", "Z"]
         self._target_text_fields = [f"{v:.3f}" for v in self._target_position]
         self._target_active_index = 0
+        self._target_select_all = [False, False, False]
+        self._last_click_time = 0.0
+        self._last_click_index = -1
+        self._double_click_interval_s = 0.35
         self._target_input_rects = [
             pygame.Rect(120 + i * 300, 165, 240, 58) for i in range(3)
         ]
@@ -90,11 +94,16 @@ class KeyboardController:
             elif keycode == pygame.K_ESCAPE:
                 self._cancel_target_input()
             elif keycode == pygame.K_BACKSPACE:
-                self._target_text_fields[self._target_active_index] = self._target_text_fields[
-                    self._target_active_index
-                ][:-1]
+                if self._target_select_all[self._target_active_index]:
+                    self._target_text_fields[self._target_active_index] = ""
+                    self._target_select_all[self._target_active_index] = False
+                else:
+                    self._target_text_fields[self._target_active_index] = self._target_text_fields[
+                        self._target_active_index
+                    ][:-1]
             elif keycode == pygame.K_TAB:
                 self._target_active_index = (self._target_active_index + 1) % 3
+                self._target_select_all = [False, False, False]
             return
 
         if keycode == pygame.K_1:
@@ -115,18 +124,24 @@ class KeyboardController:
         if not self._target_input_active:
             return
         if text and all(ch in "0123456789-+eE." for ch in text):
-            self._target_text_fields[self._target_active_index] += text
+            if self._target_select_all[self._target_active_index]:
+                self._target_text_fields[self._target_active_index] = text
+                self._target_select_all[self._target_active_index] = False
+            else:
+                self._target_text_fields[self._target_active_index] += text
 
     def _start_target_input(self, active_index):
         self._target_input_active = True
         self._target_active_index = int(np.clip(active_index, 0, 2))
         self._target_text_fields = [f"{v:.3f}" for v in self._target_position]
+        self._target_select_all = [False, False, False]
         self._target_error = ""
         pygame.key.start_text_input()
 
     def _cancel_target_input(self):
         self._target_input_active = False
         pygame.key.stop_text_input()
+        self._target_select_all = [False, False, False]
         self._target_error = ""
 
     def _commit_target_fields(self):
@@ -139,20 +154,35 @@ class KeyboardController:
         self._target_updated = True
         self._target_input_active = False
         pygame.key.stop_text_input()
+        self._target_select_all = [False, False, False]
         self._target_error = ""
 
     def _on_mouse_buttondown(self, pos):
-        if not self._target_input_active:
-            for i, rect in enumerate(self._target_input_rects):
-                if rect.collidepoint(pos):
-                    self._start_target_input(active_index=i)
-                    return
-            return
-
+        clicked_index = -1
         for i, rect in enumerate(self._target_input_rects):
             if rect.collidepoint(pos):
-                self._target_active_index = i
-                return
+                clicked_index = i
+                break
+        if clicked_index < 0:
+            return
+
+        now = time.monotonic()
+        is_double_click = (
+            clicked_index == self._last_click_index
+            and (now - self._last_click_time) <= self._double_click_interval_s
+        )
+        self._last_click_index = clicked_index
+        self._last_click_time = now
+
+        if not self._target_input_active:
+            self._start_target_input(active_index=clicked_index)
+        else:
+            self._target_active_index = clicked_index
+            self._target_select_all = [False, False, False]
+
+        if is_double_click:
+            self._target_select_all = [False, False, False]
+            self._target_select_all[clicked_index] = True
 
     def consume_target_position_update(self):
         if not self._target_updated:
@@ -186,7 +216,8 @@ class KeyboardController:
 
         for i, rect in enumerate(self._target_input_rects):
             active = self._target_input_active and i == self._target_active_index
-            border_color = self._warn_color if active else (90, 90, 90)
+            selected_all = active and self._target_select_all[i]
+            border_color = self._accent_color if selected_all else (self._warn_color if active else (90, 90, 90))
             bg_color = (40, 40, 40) if active else (30, 30, 30)
             pygame.draw.rect(self._window, bg_color, rect, border_radius=8)
             pygame.draw.rect(self._window, border_color, rect, 3, border_radius=8)

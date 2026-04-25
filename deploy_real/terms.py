@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 TERMS = {}
 
@@ -35,28 +34,28 @@ def velocity_commands(raw_state, config):
 
 @register_term("target_position")
 def target_position(raw_state, config):
+    nav_manager = raw_state.navigation_manager if hasattr(raw_state, "navigation_manager") else None
     if hasattr(raw_state, "navigation_manager") and raw_state.navigation_manager is not None:
-        goal_w = np.asarray(raw_state.navigation_manager.get_target_position(), dtype=np.float32).ravel()
+        goal_w = np.asarray(nav_manager.get_target_position(), dtype=np.float32).ravel()
     else:
         goal_w = np.asarray(config.navigation["fixed_target_position"], dtype=np.float32).ravel()
 
     if goal_w.shape[0] != 3:
         raise ValueError(f"fixed_target_position must be 3D [x, y, z], got shape {goal_w.shape}")
 
+    quat_wxyz = np.asarray(raw_state.imu.quaternion, dtype=np.float32).ravel()[:4]
     if hasattr(raw_state, "high_state") and raw_state.high_state is not None and hasattr(raw_state.high_state, "position"):
         robot_pos_w = np.asarray(raw_state.high_state.position, dtype=np.float32).ravel()[:3]
     else:
         robot_pos_w = np.zeros(3, dtype=np.float32)
 
-    goal_vec_w = goal_w - robot_pos_w
-    quat_wxyz = np.asarray(raw_state.imu.quaternion, dtype=np.float32).ravel()[:4]
-    quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]], dtype=np.float32)
-    goal_vec_b = R.from_quat(quat_xyzw).inv().apply(goal_vec_w).astype(np.float32)
+    if nav_manager is None:
+        from common.navigation_command_manager import NavigationCommandManager
 
-    distance = np.linalg.norm(goal_vec_b)
-    direction = goal_vec_b / max(distance, 1e-6)
-    log_distance = np.array([np.log(distance + 1.0)], dtype=np.float32)
-    return np.concatenate([direction.astype(np.float32), log_distance], axis=0)
+        goal_cmd_body, _ = NavigationCommandManager.compute_goal_command_body(goal_w, robot_pos_w, quat_wxyz)
+    else:
+        goal_cmd_body, _ = nav_manager.compute_goal_command_body(goal_w, robot_pos_w, quat_wxyz)
+    return goal_cmd_body
 
 
 @register_term("nav_last_action")

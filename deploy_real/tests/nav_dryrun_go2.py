@@ -4,7 +4,6 @@ import sys
 import time
 import numpy as np
 import torch
-from scipy.spatial.transform import Rotation as R
 
 DEPLOY_REAL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if DEPLOY_REAL_DIR not in sys.path:
@@ -104,19 +103,6 @@ class NavDryRunRunner:
                 return pos[:3]
         return np.array([np.nan, np.nan, np.nan], dtype=np.float32)
 
-    def get_robot_quaternion_wxyz(self) -> np.ndarray:
-        if hasattr(self.low_state, "imu_state") and hasattr(self.low_state.imu_state, "quaternion"):
-            quat = np.asarray(self.low_state.imu_state.quaternion, dtype=np.float32).ravel()
-            if quat.shape[0] >= 4:
-                return quat[:4]
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-
-    @staticmethod
-    def world_vec_to_body(vec_w: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
-        # SciPy uses xyzw order, while Unitree/MuJoCo states use wxyz.
-        quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]], dtype=np.float32)
-        return R.from_quat(quat_xyzw).inv().apply(vec_w).astype(np.float32)
-
     def run(self, print_hz: float = 10.0):
         if not self.use_mujoco:
             self.wait_for_low_state()
@@ -133,13 +119,8 @@ class NavDryRunRunner:
 
             robot_pos = self.get_robot_position()
             target_pos_world = self.navigation_manager.get_target_position()
-            goal_vec_world = np.asarray(target_pos_world - robot_pos, dtype=np.float32).ravel()
-            if np.all(np.isfinite(goal_vec_world)) and np.linalg.norm(goal_vec_world) > 1e-6:
-                target_dir = self.world_vec_to_body(goal_vec_world, self.get_robot_quaternion_wxyz())
-                target_dir = target_dir / max(np.linalg.norm(target_dir), 1e-6)
-            else:
-                target_obs = TERMS["target_position"](raw_state, self.config)
-                target_dir = np.asarray(target_obs, dtype=np.float32).ravel()[:3]
+            target_obs = TERMS["target_position"](raw_state, self.config)
+            target_dir = np.asarray(target_obs, dtype=np.float32).ravel()[:3]
             msg = create_nav_debug_message(target_dir_b=target_dir, target_speed_b=cmd)
             self.nav_debug_publisher.Write(msg)
 
