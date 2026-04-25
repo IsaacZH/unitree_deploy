@@ -42,7 +42,7 @@ class ObservationManager:
 
     def _get_term_size(self, name):
         dof = len(self.config.default_joint_pos)
-        if name in ("velocity_commands", "base_ang_vel", "projected_gravity"):
+        if name in ("velocity_commands", "base_lin_vel", "base_ang_vel", "projected_gravity"):
             return 3
         if name in ("joint_pos_rel", "joint_vel_rel", "last_action"):
             return dof

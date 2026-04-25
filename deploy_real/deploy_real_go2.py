@@ -3,9 +3,14 @@ import time
 import torch
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
-from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
+from unitree_sdk2py.idl.default import (
+    unitree_go_msg_dds__LowCmd_,
+    unitree_go_msg_dds__LowState_,
+    unitree_go_msg_dds__SportModeState_,
+)
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_ as LowCmdGo
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_ as SportModeStateGo
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.go2.sport.sport_client import SportClient
@@ -55,12 +60,15 @@ class Controller:
 
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = unitree_go_msg_dds__LowState_()
+        self.high_state = unitree_go_msg_dds__SportModeState_()
 
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmdGo)
         self.lowcmd_publisher_.Init()
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
+        self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
+        self.highstate_subscriber.Init(self.HighStateGoHandler, 10)
 
         if not use_mujoco:
             self.wait_for_low_state()
@@ -91,6 +99,9 @@ class Controller:
         self.low_state = msg
         if not self.keyboard_mode:
             self.remote_controller.set(self.low_state.wireless_remote)
+
+    def HighStateGoHandler(self, msg: SportModeStateGo):
+        self.high_state = msg
 
     def update_control_input(self):
         if self.keyboard_controller is not None:

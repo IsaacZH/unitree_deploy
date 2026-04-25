@@ -29,6 +29,13 @@ def base_ang_vel(raw_state, _config):
     return np.asarray(raw_state.imu.gyroscope, dtype=np.float32).ravel()
 
 
+@register_term("base_lin_vel")
+def base_lin_vel(raw_state, _config):
+    if hasattr(raw_state, "high_state") and raw_state.high_state is not None:
+        return np.asarray(raw_state.high_state.velocity, dtype=np.float32).ravel()
+    return np.zeros(3, dtype=np.float32)
+
+
 @register_term("projected_gravity")
 def projected_gravity(raw_state, _config):
     from common.rotation_helper import get_gravity_orientation

@@ -72,6 +72,7 @@ class RunState(BaseState):
         raw.remote = self.controller.remote_controller
         raw.imu = self.controller.low_state.imu_state
         raw.motor_state = self.controller.low_state.motor_state
+        raw.high_state = self.controller.high_state
         raw.last_action = self.controller.obs_manager.last_action
         raw.depth_feature = (
             self.controller.depth_observer.get_latest()
