@@ -8,14 +8,14 @@ control_dt: 0.02
 
 policy_path: "pre_train/himloco_lab/policy.pt"
 
-# depth_camera:
-#   topic: "rt/depth_image"
-#   min_depth: 0.25
-#   max_depth: 10.0
-#   resolution: [64, 40]   # width, height – must match training crop
-#   encoder_path: "pre_train/depth_encoder/vae_pretrain_new.pth"
-#   feature_dim: 64
-#   device: "cpu"
+depth_camera:
+  topic: "rt/depth_image"
+  min_depth: 0.25
+  max_depth: 10.0
+  resolution: [64, 40]   # width, height – must match training crop
+  encoder_path: "pre_train/depth_encoder/vae_pretrain_new.pth"
+  feature_dim: 64
+  device: "cpu"
 
 commands:
   base_velocity:

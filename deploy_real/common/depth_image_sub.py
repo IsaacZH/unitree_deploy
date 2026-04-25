@@ -16,12 +16,12 @@ Typical usage
     )
 
     # In the control loop:
-    depth_feature = observer.get_latest()   # np.ndarray [feature_dim]
+    depth_feature = observer.get_latest()   # np.ndarray [feature_dim * H' * W']
 """
 
-from __future__ import annotations
-
 from collections import OrderedDict
+from dataclasses import dataclass
+import threading
 
 import numpy as np
 import torch
@@ -41,6 +41,7 @@ from unitree_sdk2py.idl.std_msgs.msg.dds_ import Header_
 # DDS message types  (mirrors depth_image_dds.py in d435i_test)
 # ---------------------------------------------------------------------------
 
+@dataclass
 @annotate.final
 @annotate.autoid("sequential")
 class DepthIntrinsics_(idl.IdlStruct, typename="DepthIntrinsics_"):
@@ -51,6 +52,7 @@ class DepthIntrinsics_(idl.IdlStruct, typename="DepthIntrinsics_"):
     cy: types.float64
 
 
+@dataclass
 @annotate.final
 @annotate.autoid("sequential")
 class DepthImage_(idl.IdlStruct, typename="DepthImage_"):
@@ -80,6 +82,13 @@ class _VAESampler(nn.Module):
             input_dim, latent_dim, kernel_size=3, stride=1, padding=1, bias=False
         )
         self.mean_layers = nn.Sequential(
+            Conv2dNormActivation(
+                latent_dim, latent_dim, kernel_size=3, stride=1, padding=1, bias=False
+            ),
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=1, stride=1, padding=0),
+        )
+        # Keep this branch to stay checkpoint-compatible with training modules.
+        self.logvar_layers = nn.Sequential(
             Conv2dNormActivation(
                 latent_dim, latent_dim, kernel_size=3, stride=1, padding=1, bias=False
             ),
@@ -132,8 +141,10 @@ class _VAENet(nn.Module):
 # ---------------------------------------------------------------------------
 
 class DepthImageObserver:
-    """Subscribes to D435i depth images over DDS, encodes each frame with
-    VAENet, and caches the resulting flat feature vector.
+    """Subscribes to D435i depth images over DDS.
+
+    The DDS callback only caches the latest raw depth frame. Encoding is done
+    lazily when get_latest() is called.
 
     ChannelFactoryInitialize() must have been called before constructing this.
 
@@ -164,9 +175,6 @@ class DepthImageObserver:
         self.device     = torch.device(device)
         self.feature_dim = feature_dim
 
-        # Initialise cache with zeros so callers always get a valid array
-        self._latest_feature: np.ndarray = np.zeros(feature_dim, dtype=np.float32)
-
         # Load encoder weights.  Only keep keys for depth_encoder and
         # vae_sampler; the checkpoint may also contain depth_decoder keys
         # that are not needed for inference.
@@ -179,6 +187,22 @@ class DepthImageObserver:
         }
         self._encoder.load_state_dict(encoder_keys, strict=True)
         print(f"[DepthImageObserver] Loaded encoder from: {encoder_path}")
+
+        # Infer encoded map shape from target resolution so output dim matches
+        # training-style flattened feature map.
+        with torch.no_grad():
+            dummy = torch.zeros(1, 1, self.target_h, self.target_w, device=self.device, dtype=torch.float32)
+            dummy_map = self._encoder(dummy)
+        self._encoded_map_shape = tuple(int(x) for x in dummy_map.shape)  # (1, C, H', W')
+        self._encoded_flat_dim = int(dummy_map.numel())
+
+        # Initialise cache with zeros so callers always get a valid array
+        self._latest_feature: np.ndarray = np.zeros(self._encoded_flat_dim, dtype=np.float32)
+        self._latest_depth_image: np.ndarray | None = None
+        self._latest_depth_scale: float = 0.0
+        self._frame_version: int = 0
+        self._encoded_version: int = -1
+        self._lock = threading.Lock()
 
         # DDS subscriber
         self._sub = ChannelSubscriber(topic, DepthImage_)
@@ -214,12 +238,11 @@ class DepthImageObserver:
 
     def _on_message(self, msg: DepthImage_):
         try:
-            depth_image = _decode_depth_message(msg)
-            depth_tensor = self._preprocess(depth_image, msg.depth_scale).to(self.device)
-            with torch.no_grad():
-                feat = self._encoder(depth_tensor)       # [1, C, H', W']
-                feat = feat.mean(dim=[2, 3]).squeeze(0)  # [C]  – global avg pool
-            self._latest_feature = feat.cpu().numpy().astype(np.float32)
+            depth_image = _decode_depth_message(msg).copy()
+            with self._lock:
+                self._latest_depth_image = depth_image
+                self._latest_depth_scale = float(msg.depth_scale)
+                self._frame_version += 1
         except Exception as exc:
             print(f"[DepthImageObserver] Error processing frame: {exc}")
 
@@ -228,5 +251,24 @@ class DepthImageObserver:
     # ------------------------------------------------------------------
 
     def get_latest(self) -> np.ndarray:
-        """Return the most recently encoded depth feature (copy, shape [feature_dim])."""
-        return self._latest_feature.copy()
+        """Return latest flattened encoded depth feature (copy)."""
+        with self._lock:
+            if self._encoded_version == self._frame_version:
+                return self._latest_feature.copy()
+            if self._latest_depth_image is None:
+                return self._latest_feature.copy()
+            depth_image = self._latest_depth_image.copy()
+            depth_scale = self._latest_depth_scale
+            frame_version = self._frame_version
+
+        depth_tensor = self._preprocess(depth_image, depth_scale).to(self.device)
+        with torch.no_grad():
+            feat_map = self._encoder(depth_tensor)        # [1, C, H', W']
+            feat = feat_map.contiguous().view(-1)         # [C * H' * W']
+        feature = feat.cpu().numpy().astype(np.float32)
+
+        with self._lock:
+            if frame_version >= self._encoded_version:
+                self._latest_feature = feature
+                self._encoded_version = frame_version
+            return self._latest_feature.copy()

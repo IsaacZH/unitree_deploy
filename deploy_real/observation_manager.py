@@ -49,6 +49,13 @@ class ObservationManager:
         if name == "depth_image":
             if self.config.depth_camera is None:
                 raise ValueError("depth_image term requires depth_camera config")
+            if "feature_dim" in self.config.depth_camera and "resolution" in self.config.depth_camera:
+                width, height = self.config.depth_camera["resolution"]
+                # Depth encoder outputs spatial features (C, H', W') that are flattened.
+                # For the current encoder stack and 64x40 input this is 64x5x8.
+                fmap_w = max(1, int(width) // 8)
+                fmap_h = max(1, int(height) // 8)
+                return int(self.config.depth_camera["feature_dim"]) * fmap_w * fmap_h
             if "feature_dim" in self.config.depth_camera:
                 return int(self.config.depth_camera["feature_dim"])
             if "resolution" in self.config.depth_camera:
