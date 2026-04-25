@@ -12,6 +12,10 @@ def register_term(name):
 
 @register_term("velocity_commands")
 def velocity_commands(raw_state, config):
+    if hasattr(raw_state, "navigation_manager") and raw_state.navigation_manager.use_navigation_command():
+        cmd = raw_state.navigation_manager.get_navigation_velocity_command(raw_state, config)
+        return np.asarray(cmd, dtype=np.float32).ravel()
+
     ranges = config.commands["base_velocity"]["ranges"]
     lin_x_max = float(max(abs(ranges["lin_vel_x"][0]), abs(ranges["lin_vel_x"][1])))
     lin_y_max = float(max(abs(ranges["lin_vel_y"][0]), abs(ranges["lin_vel_y"][1])))
@@ -22,6 +26,16 @@ def velocity_commands(raw_state, config):
         raw_state.remote.rx * -ang_z_max,
     ], dtype=np.float32)
     return cmd
+
+
+@register_term("target_position")
+def target_position(raw_state, config):
+    if hasattr(raw_state, "navigation_manager") and raw_state.navigation_manager is not None:
+        target = raw_state.navigation_manager.get_target_position()
+        return np.asarray(target, dtype=np.float32).ravel()
+
+    fixed = config.navigation["fixed_target_position"]
+    return np.asarray(fixed, dtype=np.float32).ravel()
 
 
 @register_term("base_ang_vel")

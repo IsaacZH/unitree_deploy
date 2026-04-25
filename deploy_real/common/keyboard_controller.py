@@ -30,7 +30,7 @@ class KeyboardController:
         print(
             "Keyboard control enabled: "
             "[w/s]=forward/back, [a/d]=left/right, [q/e]=yaw, "
-            "[1]=start, [2]=A, [3]=select. "
+            "[1]=start, [2]=A, [3]=select, [4/x]=X. "
             "Keep the 'Keyboard Controller' window focused."
         )
 
@@ -66,6 +66,8 @@ class KeyboardController:
             self._set_pulse(KeyMap.A)
         elif keycode == pygame.K_3:
             self._set_pulse(KeyMap.select)
+        elif keycode == pygame.K_4 or keycode == pygame.K_x:
+            self._set_pulse(KeyMap.X)
         elif keycode == pygame.K_SPACE:
             for key in self._axis_active:
                 self._axis_active[key] = False

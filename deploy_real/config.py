@@ -35,4 +35,4 @@ class Config:
 
             # Optional depth camera config
             self.depth_camera = config.get("depth_camera", None)
-            
+            self.navigation = config["navigation"]

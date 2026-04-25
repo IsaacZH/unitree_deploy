@@ -1,8 +1,7 @@
-import numpy as np
 import time
 import torch
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
-from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelSubscriber
 from unitree_sdk2py.idl.default import (
     unitree_go_msg_dds__LowCmd_,
     unitree_go_msg_dds__LowState_,
@@ -15,10 +14,11 @@ from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.go2.sport.sport_client import SportClient
 
-from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_go
-from common.remote_controller import RemoteController, KeyMap
+from common.command_helper import init_cmd_go
+from common.remote_controller import RemoteController
 from common.depth_image_sub import DepthImageObserver
 from common.keyboard_controller import KeyboardController
+from common.navigation_command_manager import NavigationCommandManager
 from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
@@ -48,6 +48,7 @@ class Controller:
         self.action_manager = ActionManager(config)
 
         self.target_dof_pos = config.default_joint_pos.copy()
+        self.navigation_manager = NavigationCommandManager(config.navigation, TERMS)
 
         
         if not use_mujoco:
@@ -87,7 +88,7 @@ class Controller:
                 target_resolution=dc["resolution"],
                 encoder_path=dc["encoder_path"],
                 feature_dim=dc["feature_dim"],
-                device=dc.get("device", "cpu"),
+                device=dc["device"],
             )
         else:
             self.depth_observer = None
@@ -106,6 +107,7 @@ class Controller:
     def update_control_input(self):
         if self.keyboard_controller is not None:
             self.keyboard_controller.update_remote(self.remote_controller)
+        self.navigation_manager.update_control_source(self.remote_controller.button)
 
     def close(self):
         if self.keyboard_controller is not None:

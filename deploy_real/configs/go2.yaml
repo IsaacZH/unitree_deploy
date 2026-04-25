@@ -25,6 +25,34 @@ commands:
       ang_vel_z: [-2.0, 2.0]
       heading: null
 
+navigation:
+  enabled: false
+  switch_button: "X"
+  fixed_target_position: [2.0, 0.0, 0.0]
+  kp: [0.6, 0.6, 1.0]
+  max_speed: [1.5, 1.0, 2.0]
+  policy_path: null
+  device: "cpu"
+  policy_input:
+    base_lin_vel:
+      clip: [-100, 100]
+      scale: 1.0
+    base_ang_vel:
+      clip: [-100, 100]
+      scale: 1.0
+    projected_gravity:
+      clip: [-100, 100]
+      scale: 1.0
+    last_action:
+      clip: [-100, 100]
+      scale: 1.0
+    target_position:
+      clip: [-100, 100]
+      scale: 1.0
+    depth_image:
+      clip: [-100, 100]
+      scale: 1.0
+
 actions:
   JointPositionAction:
     clip: [-100.0, 100.0]

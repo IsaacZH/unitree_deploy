@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from common.term_pipeline import apply_clip_scale, collect_scaled_terms
 
 
 class ObservationManager:
@@ -42,7 +43,7 @@ class ObservationManager:
 
     def _get_term_size(self, name):
         dof = len(self.config.default_joint_pos)
-        if name in ("velocity_commands", "base_lin_vel", "base_ang_vel", "projected_gravity"):
+        if name in ("velocity_commands", "base_lin_vel", "base_ang_vel", "projected_gravity", "target_position"):
             return 3
         if name in ("joint_pos_rel", "joint_vel_rel", "last_action"):
             return dof
@@ -70,16 +71,14 @@ class ObservationManager:
     def set_last_action(self, action):
         self.last_action = action.copy()
 
-    def _apply_clip_scale(self, values, clip, scale):
-        values = np.clip(values, clip[0], clip[1])
-        values = values * np.array(scale, dtype=np.float32)
-        return values
-
-    def _get_term_value(self, name):
+    def _get_term_value(self, name, raw_state):
         if name == "last_action":
             return self.last_action
         term_fn = self.term_registry[name]
-        return term_fn(self.raw_state, self.config)
+        return term_fn(raw_state, self.config)
+
+    def _term_value_provider(self, name, raw_state, _config):
+        return self._get_term_value(name, raw_state)
 
     def get_obs_slice(self, name):
         offset = self.obs_offsets[name]
@@ -88,15 +87,14 @@ class ObservationManager:
         return slice(offset, offset + size)
 
     def forward(self, raw_state):
-        self.raw_state = raw_state
-
-        obs_parts = []
-        for i, name in enumerate(self.obs_names):
-            values = self._get_term_value(name)
-            if not isinstance(values, np.ndarray):
-                values = np.array(values, dtype=np.float32)
-            values = self._apply_clip_scale(values, self.obs_clips[i], self.obs_scales[i])
-            obs_parts.append(values)
+        obs_parts = collect_scaled_terms(
+            raw_state=raw_state,
+            config=self.config,
+            names=self.obs_names,
+            clips=self.obs_clips,
+            scales=self.obs_scales,
+            value_provider=self._term_value_provider,
+        )
 
         current_obs = np.concatenate(obs_parts).astype(np.float32)
 
@@ -127,11 +125,6 @@ class PolicyInputManager:
             self.input_clips.append(pi_config["clip"])
             self.input_scales.append(pi_config["scale"])
 
-    def _apply_clip_scale(self, values, clip, scale):
-        values = np.clip(values, clip[0], clip[1])
-        values = values * np.array(scale, dtype=np.float32)
-        return values
-
     def forward(self, current_obs, encoder_output):
         parts = []
 
@@ -141,7 +134,7 @@ class PolicyInputManager:
                 vel = enc[:3]
                 latent = F.normalize(enc[3:], dim=-1, p=2)
                 values = torch.cat((vel, latent), dim=-1).numpy()
-                values = self._apply_clip_scale(values, self.input_clips[i], self.input_scales[i])
+                values = apply_clip_scale(values, self.input_clips[i], self.input_scales[i])
             else:
                 offset = self.obs_offsets[name]
                 idx = self.obs_names.index(name)

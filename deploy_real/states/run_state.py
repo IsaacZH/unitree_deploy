@@ -1,9 +1,9 @@
 import time
 import torch
-import numpy as np
 from typing import Optional
 from common.remote_controller import KeyMap
 from common.command_helper import create_damping_cmd
+from common.raw_state import RawState
 from .base_state import BaseState
 
 
@@ -66,17 +66,16 @@ class RunState(BaseState):
 
     def _build_raw_state(self):
         """Build raw state object from robot data."""
-        class RawState:
-            pass
-        raw = RawState()
-        raw.remote = self.controller.remote_controller
-        raw.imu = self.controller.low_state.imu_state
-        raw.motor_state = self.controller.low_state.motor_state
-        raw.high_state = self.controller.high_state
-        raw.last_action = self.controller.obs_manager.last_action
-        raw.depth_feature = (
+        return RawState(
+            remote=self.controller.remote_controller,
+            imu=self.controller.low_state.imu_state,
+            motor_state=self.controller.low_state.motor_state,
+            high_state=self.controller.high_state,
+            navigation_manager=self.controller.navigation_manager,
+            last_action=self.controller.obs_manager.last_action,
+            depth_feature=(
             self.controller.depth_observer.get_latest()
             if self.controller.depth_observer is not None
             else None
+            ),
         )
-        return raw
