@@ -31,14 +31,31 @@ class ObservationManager:
             self.obs_clips.append(obs_config["clip"])
             self.obs_scales.append(obs_config["scale"])
 
-        self.num_obs_current = sum(len(s) for s in self.obs_scales)
-
         self.obs_offsets = {}
         offset = 0
-        for i, name in enumerate(self.obs_names):
+        for name in self.obs_names:
+            size = self._get_term_size(name)
             self.obs_offsets[name] = offset
-            self.obs_sizes.append(len(self.obs_scales[i]))
-            offset += len(self.obs_scales[i])
+            self.obs_sizes.append(size)
+            offset += size
+        self.num_obs_current = offset
+
+    def _get_term_size(self, name):
+        dof = len(self.config.default_joint_pos)
+        if name in ("velocity_commands", "base_ang_vel", "projected_gravity"):
+            return 3
+        if name in ("joint_pos_rel", "joint_vel_rel", "last_action"):
+            return dof
+        if name == "depth_image":
+            if self.config.depth_camera is None:
+                raise ValueError("depth_image term requires depth_camera config")
+            if "feature_dim" in self.config.depth_camera:
+                return int(self.config.depth_camera["feature_dim"])
+            if "resolution" in self.config.depth_camera:
+                width, height = self.config.depth_camera["resolution"]
+                return int(width) * int(height)
+            raise ValueError("depth_image term size cannot be inferred from depth_camera config")
+        raise ValueError(f"Unsupported observation term for static sizing: {name}")
 
     def reset(self):
         self.history_buffer = np.zeros(self.history_length * self.num_obs_current, dtype=np.float32)

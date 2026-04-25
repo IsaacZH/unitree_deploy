@@ -67,8 +67,8 @@ class MoveToDefaultPosState(BaseState):
         if elapsed_time >= self.ts[-1]:
             print("Completed moving to default position.")
             # Wait for A button
-            if self.controller.remote_controller.button[KeyMap.A] == 1:
-                return "run"
+            # if self.controller.remote_controller.button[KeyMap.A] == 1:
+            return "run"
         else:
             time.sleep(self.config.control_dt)
 

@@ -15,8 +15,8 @@ class ActionManager:
     def forward(self, policy_action):
         action = policy_action.copy()
 
-        clip_min = np.array([c[0] for c in self.action_clip], dtype=np.float32)
-        clip_max = np.array([c[1] for c in self.action_clip], dtype=np.float32)
+        clip_min = float(self.action_clip[0])
+        clip_max = float(self.action_clip[1])
         action = np.clip(action, clip_min, clip_max)
         action = action * np.array(self.action_scale, dtype=np.float32)
 
