@@ -57,6 +57,7 @@ class StateMachine:
         if not self.is_running or self.current_state is None:
             return False
 
+        self.controller.update_control_input()
         next_state = self.current_state.execute()
 
         if next_state is not None:

@@ -13,6 +13,7 @@ from unitree_sdk2py.go2.sport.sport_client import SportClient
 from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_go
 from common.remote_controller import RemoteController, KeyMap
 from common.depth_image_sub import DepthImageObserver
+from common.keyboard_controller import KeyboardController
 from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
@@ -21,10 +22,12 @@ from state_machine import StateMachine
 
 
 class Controller:
-    def __init__(self, config: Config, use_mujoco: bool = False) -> None:
+    def __init__(self, config: Config, use_mujoco: bool = False, keyboard: bool = False) -> None:
         self.config = config
         self.use_mujoco = use_mujoco
+        self.keyboard_mode = keyboard
         self.remote_controller = RemoteController()
+        self.keyboard_controller = KeyboardController() if self.keyboard_mode else None
 
         self.policy = torch.jit.load(config.policy_path)
         self.actor = self.policy.actor
@@ -86,7 +89,16 @@ class Controller:
 
     def LowStateGoHandler(self, msg: LowStateGo):
         self.low_state = msg
-        self.remote_controller.set(self.low_state.wireless_remote)
+        if not self.keyboard_mode:
+            self.remote_controller.set(self.low_state.wireless_remote)
+
+    def update_control_input(self):
+        if self.keyboard_controller is not None:
+            self.keyboard_controller.update_remote(self.remote_controller)
+
+    def close(self):
+        if self.keyboard_controller is not None:
+            self.keyboard_controller.close()
 
     def send_cmd(self, cmd: LowCmdGo):
         cmd.crc = CRC().Crc(cmd)
@@ -114,6 +126,7 @@ if __name__ == "__main__":
     parser.add_argument("net", type=str, help="network interface")
     parser.add_argument("config", type=str, help="config file name in the configs folder")
     parser.add_argument("--mujoco", action="store_true", help="use mujoco simulation")
+    parser.add_argument("--keyboard", action="store_true", help="use keyboard for state transitions and velocity commands")
     args = parser.parse_args()
 
     config_path = f"deploy_real/configs/{args.config}"
@@ -121,13 +134,16 @@ if __name__ == "__main__":
 
     ChannelFactoryInitialize(0, args.net)
 
-    controller = Controller(config, use_mujoco=args.mujoco)
+    controller = Controller(config, use_mujoco=args.mujoco, keyboard=args.keyboard)
 
     if not args.mujoco:
         controller.shut_down_control_service()
 
     # Run state machine
-    while controller.state_machine.execute():
-        pass
+    try:
+        while controller.state_machine.execute():
+            pass
+    finally:
+        controller.close()
 
     print("Exit")

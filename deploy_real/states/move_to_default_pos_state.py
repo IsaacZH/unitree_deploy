@@ -17,6 +17,7 @@ class MoveToDefaultPosState(BaseState):
         self.kds = None
         self.ts = None
         self.qs = None
+        self._completion_logged = False
 
     def enter(self):
         """Initialize position interpolation."""
@@ -42,6 +43,7 @@ class MoveToDefaultPosState(BaseState):
         self.qs[0] = self.q0.tolist()
 
         self.start_time = time.time()
+        self._completion_logged = False
 
     def execute(self) -> Optional[str]:
         """
@@ -65,10 +67,12 @@ class MoveToDefaultPosState(BaseState):
 
         # Check if interpolation is complete
         if elapsed_time >= self.ts[-1]:
-            print("Completed moving to default position.")
+            if not self._completion_logged:
+                print("Completed moving to default position.")
+                self._completion_logged = True
             # Wait for A button
-            # if self.controller.remote_controller.button[KeyMap.A] == 1:
-            return "run"
+            if self.controller.remote_controller.button[KeyMap.A] == 1:
+                return "run"
         else:
             time.sleep(self.config.control_dt)
 

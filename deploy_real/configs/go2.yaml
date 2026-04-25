@@ -20,7 +20,7 @@ policy_path: "pre_train/himloco_lab/policy.pt"
 commands:
   base_velocity:
     ranges:
-      lin_vel_x: [-2, 2]
+      lin_vel_x: [-1.5, 1.5]
       lin_vel_y: [-1.0, 1.0]
       ang_vel_z: [-2.0, 2.0]
       heading: null
