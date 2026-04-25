@@ -55,3 +55,9 @@ def joint_vel_rel(raw_state, config):
 @register_term("last_action")
 def last_action(raw_state, config):
     return raw_state.last_action.copy() if hasattr(raw_state, 'last_action') else np.zeros(len(config.default_joint_pos), dtype=np.float32)
+
+
+@register_term("depth_image")
+def depth_image(raw_state, _config):
+    """Encoded D435i depth feature vector from DepthImageObserver."""
+    return raw_state.depth_feature

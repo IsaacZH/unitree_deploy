@@ -12,6 +12,7 @@ from unitree_sdk2py.go2.sport.sport_client import SportClient
 
 from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_go
 from common.remote_controller import RemoteController, KeyMap
+from common.depth_image_sub import DepthImageObserver
 from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
@@ -64,6 +65,21 @@ class Controller:
         init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
 
         self.obs_manager.reset()
+
+        # Initialize depth camera observer (optional)
+        if config.depth_camera is not None:
+            dc = config.depth_camera
+            self.depth_observer = DepthImageObserver(
+                topic=dc["topic"],
+                min_depth=dc["min_depth"],
+                max_depth=dc["max_depth"],
+                target_resolution=dc["resolution"],
+                encoder_path=dc["encoder_path"],
+                feature_dim=dc["feature_dim"],
+                device=dc.get("device", "cpu"),
+            )
+        else:
+            self.depth_observer = None
 
         # Initialize state machine
         self.state_machine = StateMachine(self, initial_state_name="move_to_default_pos")

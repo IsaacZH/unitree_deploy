@@ -32,4 +32,7 @@ class Config:
             self.fixstand_kd = config["FixStand"]["kd"]
             self.fixstand_ts = config["FixStand"]["ts"]
             self.fixstand_qs = config["FixStand"]["qs"]
+
+            # Optional depth camera config
+            self.depth_camera = config.get("depth_camera", None)
             
