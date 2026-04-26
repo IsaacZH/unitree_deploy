@@ -121,6 +121,8 @@ class NavDryRunRunner:
             target_pos_world = self.navigation_manager.get_target_position()
             target_obs = TERMS["target_position"](raw_state, self.config)
             target_dir = np.asarray(target_obs, dtype=np.float32).ravel()[:3]
+            base_lin_obs = np.asarray(TERMS["base_lin_vel"](raw_state, self.config), dtype=np.float32).ravel()
+            base_ang_obs = np.asarray(TERMS["base_ang_vel"](raw_state, self.config), dtype=np.float32).ravel()
             msg = create_nav_debug_message(target_dir_b=target_dir, target_speed_b=cmd)
             self.nav_debug_publisher.Write(msg)
 
@@ -130,6 +132,8 @@ class NavDryRunRunner:
                 print(
                     f"[NavDryRun] t={time.time():.3f} source=navigation "
                     f"vx={cmd[0]: .3f} vy={cmd[1]: .3f} wz={cmd[2]: .3f} "
+                    f"v_obs=({base_lin_obs[0]: .3f},{base_lin_obs[1]: .3f},{base_lin_obs[2]: .3f}) "
+                    f"w_obs=({base_ang_obs[0]: .3f},{base_ang_obs[1]: .3f},{base_ang_obs[2]: .3f}) "
                     f"robot=({robot_pos[0]: .3f},{robot_pos[1]: .3f},{robot_pos[2]: .3f}) "
                     f"target=({target_pos[0]: .3f},{target_pos[1]: .3f},{target_pos[2]: .3f})"
                 )

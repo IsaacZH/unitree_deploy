@@ -26,10 +26,10 @@ commands:
       heading: null
 
 navigation:
-  enabled: true
+  enabled: false
   switch_button: "X"
   command_rate_hz: 5.0
-  fixed_target_position: [0.0, 5.0, 0.0]
+  fixed_target_position: [0.0, 5.0, 0.5]
   use_raw_actions: true
   action_scale: [1.0, 1.0, 1.0]
   action_offset: [0.0, 0.0, 0.0]
