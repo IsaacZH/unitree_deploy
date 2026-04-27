@@ -13,8 +13,12 @@ if DEPLOY_REAL_DIR not in sys.path:
     sys.path.insert(0, DEPLOY_REAL_DIR)
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowState_
+from unitree_sdk2py.idl.default import (
+    unitree_go_msg_dds__LowState_,
+    unitree_go_msg_dds__SportModeState_,
+)
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_ as SportModeStateGo
 
 
 @dataclass
@@ -264,9 +268,13 @@ class InekfDryRunRunner:
     def __init__(self, args):
         self.args = args
         self.low_state = unitree_go_msg_dds__LowState_()
+        self.high_state = unitree_go_msg_dds__SportModeState_()
         self.last_odom: Optional[OdomEstimate] = None
         self._lock = threading.Lock()
         self._msg_count = 0
+
+        self.foxglove_server = None
+        self.foxglove_channels = {}
 
         self.estimator = InekfOdomEstimator(
             robot_freq=args.robot_freq,
@@ -284,6 +292,10 @@ class InekfDryRunRunner:
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.low_state_handler, 10)
+        self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
+        self.highstate_subscriber.Init(self.high_state_handler, 10)
+
+        self._init_foxglove()
 
     def low_state_handler(self, msg: LowStateGo):
         odom = self.estimator.update(msg)
@@ -292,6 +304,168 @@ class InekfDryRunRunner:
             self._msg_count += 1
             if odom is not None:
                 self.last_odom = odom
+
+    def high_state_handler(self, msg: SportModeStateGo):
+        with self._lock:
+            self.high_state = msg
+
+    @staticmethod
+    def _extract_robot_pose_from_high_state(high_state):
+        """Extract position and quaternion from SportModeState.
+        Returns: (position_xyz, quaternion_wxyz)
+        """
+        position = np.array([np.nan, np.nan, np.nan], dtype=np.float64)
+        quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        
+        # Extract position
+        if hasattr(high_state, "position"):
+            pos = np.asarray(high_state.position, dtype=np.float64).ravel()
+            if pos.shape[0] >= 3:
+                position = pos[:3]
+        
+        # Extract quaternion from IMU state
+        if hasattr(high_state, "imu_state") and hasattr(high_state.imu_state, "quaternion"):
+            quat = np.asarray(high_state.imu_state.quaternion, dtype=np.float64).ravel()
+            if quat.shape[0] >= 4:
+                # Assuming stored as [x, y, z, w], convert to [w, x, y, z]
+                quaternion = np.array([quat[0], quat[1], quat[2], quat[3]], dtype=np.float64)
+        
+        return position, quaternion
+
+    def _init_foxglove(self):
+        if self.args.disable_foxglove:
+            print("[InekfDryRun] Foxglove publishing disabled by flag.")
+            return
+
+        try:
+            import foxglove
+            import json as _json
+
+            # JSON Schema for foxglove.FrameTransform
+            # See: https://docs.foxglove.dev/docs/visualization/message-schemas/frame-transform
+            _ft_schema = {
+                "type": "object",
+                "properties": {
+                    "timestamp": {
+                        "type": "object",
+                        "properties": {
+                            "sec": {"type": "integer"},
+                            "nsec": {"type": "integer"},
+                        },
+                    },
+                    "parent_frame_id": {"type": "string"},
+                    "child_frame_id": {"type": "string"},
+                    "translation": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "z": {"type": "number"},
+                        },
+                    },
+                    "rotation": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "number"},
+                            "y": {"type": "number"},
+                            "z": {"type": "number"},
+                            "w": {"type": "number"},
+                        },
+                    },
+                },
+            }
+            _ft_schema_obj = foxglove.Schema(
+                name="foxglove.FrameTransform",
+                encoding="jsonschema",
+                data=_json.dumps(_ft_schema).encode(),
+            )
+
+            self.foxglove_server = foxglove.start_server(
+                name="go2_odom_compare",
+                host=self.args.foxglove_host,
+                port=self.args.foxglove_port,
+            )
+            # Three separate topics, one per frame
+            self.foxglove_channels = {
+                "inekf": foxglove.Channel("/go2/tf/inekf", message_encoding="json", schema=_ft_schema_obj),
+                "native": foxglove.Channel("/go2/tf/native", message_encoding="json", schema=_ft_schema_obj),
+            }
+            print(
+                "[InekfDryRun] Foxglove server started at "
+                f"ws://{self.args.foxglove_host}:{self.foxglove_server.port}"
+            )
+            print(
+                "[InekfDryRun] Publishing foxglove.FrameTransform on:"
+                " /go2/tf/inekf  /go2/tf/native"
+            )
+        except Exception as exc:
+            self.foxglove_server = None
+            self.foxglove_channels = {}
+            print(f"[InekfDryRun] Foxglove init failed: {exc}")
+
+    def _publish_foxglove(self, t_sec: float, inekf_pos: np.ndarray, inekf_quat: np.ndarray,
+                           robot_pos: np.ndarray, robot_quat: np.ndarray):
+        if self.foxglove_server is None:
+            return
+
+        ch_inekf = self.foxglove_channels.get("inekf")
+        ch_native = self.foxglove_channels.get("native")
+        if ch_inekf is None:
+            return
+
+        # Timestamp in sec/nsec for foxglove.FrameTransform
+        timestamp_ns = int(t_sec * 1e9)
+        stamp = {"sec": int(timestamp_ns // 1_000_000_000), "nsec": int(timestamp_ns % 1_000_000_000)}
+
+        # /go2/tf/inekf — INEKF estimated frame
+        ch_inekf.log({
+            "timestamp": stamp,
+            "parent_frame_id": "world",
+            "child_frame_id": "go2_inekf",
+            "translation": {
+                "x": float(inekf_pos[0]),
+                "y": float(inekf_pos[1]),
+                "z": float(inekf_pos[2]),
+            },
+            "rotation": {
+                "x": float(inekf_quat[1]),  # wxyz -> xyzw
+                "y": float(inekf_quat[2]),
+                "z": float(inekf_quat[3]),
+                "w": float(inekf_quat[0]),
+            },
+        })
+
+        # /go2/tf/native — SportModeState native frame
+        if ch_native is not None and np.all(np.isfinite(robot_pos)):
+            ch_native.log({
+                "timestamp": stamp,
+                "parent_frame_id": "world",
+                "child_frame_id": "go2_native",
+                "translation": {
+                    "x": float(robot_pos[0]),  
+                    "y": float(robot_pos[1]),
+                    "z": float(robot_pos[2]),
+                },
+                "rotation": {
+                    "x": float(robot_quat[1]),  # wxyz -> xyzw
+                    "y": float(robot_quat[2]),
+                    "z": float(robot_quat[3]),
+                    "w": float(robot_quat[0]),
+                },
+            })
+
+    def close(self):
+        for ch in self.foxglove_channels.values():
+            try:
+                ch.close()
+            except Exception:
+                pass
+
+        if self.foxglove_server is not None:
+            try:
+                self.foxglove_server.stop()
+            except Exception:
+                pass
 
     def wait_for_low_state(self, timeout_s: float = 5.0):
         start = time.monotonic()
@@ -313,6 +487,7 @@ class InekfDryRunRunner:
                 with self._lock:
                     odom = self.last_odom
                     msg_count = self._msg_count
+                    robot_pos, robot_quat = self._extract_robot_pose_from_high_state(self.high_state)
                 if odom is None:
                     print(f"[InekfDryRun] waiting_filter_start msgs={msg_count}")
                 else:
@@ -320,14 +495,29 @@ class InekfDryRunRunner:
                     q = odom.quaternion_wxyz
                     v = odom.linear_velocity_base
                     w = odom.angular_velocity_base
-                    print(
-                        "[InekfDryRun] "
-                        f"t={time.time():.3f} msgs={msg_count} "
-                        f"pos=({p[0]: .3f},{p[1]: .3f},{p[2]: .3f}) "
-                        f"quat_wxyz=({q[0]: .4f},{q[1]: .4f},{q[2]: .4f},{q[3]: .4f}) "
-                        f"v_b=({v[0]: .3f},{v[1]: .3f},{v[2]: .3f}) "
-                        f"w_b=({w[0]: .3f},{w[1]: .3f},{w[2]: .3f})"
-                    )
+                    t_now = time.time()
+                    if np.all(np.isfinite(robot_pos)):
+                        pos_err = p - robot_pos
+                        pos_err_norm = float(np.linalg.norm(pos_err))
+                        pos_cmp_text = (
+                            f" robot_pos=({robot_pos[1]: .3f},{robot_pos[0]: .3f},{robot_pos[2]: .3f})"
+                            f" pos_err=({pos_err[1]: .3f},{pos_err[0]: .3f},{pos_err[2]: .3f})"
+                            f" |err|={pos_err_norm: .3f}"
+                        )
+                    else:
+                        pos_cmp_text = " robot_pos=( nan, nan, nan) pos_err=( nan, nan, nan) |err|= nan"
+
+                    self._publish_foxglove(t_now, p, q, robot_pos, robot_quat)
+
+                    # print(
+                    #     "[InekfDryRun] "
+                    #     f"t={t_now:.3f} msgs={msg_count} "
+                    #     f"pos=({p[1]: .3f},{p[0]: .3f},{p[2]: .3f}) "
+                    #     f"quat_wxyz=({q[0]: .4f},{q[1]: .4f},{q[2]: .4f},{q[3]: .4f}) "
+                    #     f"v_b=({v[0]: .3f},{v[1]: .3f},{v[2]: .3f}) "
+                    #     f"w_b=({w[0]: .3f},{w[1]: .3f},{w[2]: .3f})"
+                    #     f"{pos_cmp_text}"
+                    # )
                 next_print = now + print_period
 
             time.sleep(0.001)
@@ -354,9 +544,12 @@ def parse_args():
     parser.add_argument(
         "--urdf-path",
         type=str,
-        default=None,
-        help="Optional fallback URDF path if unitree_description.loader.loadGo2 is unavailable.",
+        default="/home/isaac/deploy_him_py/go2_description/urdf/go2_description.urdf",
+        help="Fallback URDF path used when unitree_description.loader.loadGo2 is unavailable.",
     )
+    parser.add_argument("--foxglove-host", type=str, default="127.0.0.1", help="Foxglove websocket host")
+    parser.add_argument("--foxglove-port", type=int, default=8765, help="Foxglove websocket port (0 for auto)")
+    parser.add_argument("--disable-foxglove", action="store_true", help="disable Foxglove publishing")
     return parser.parse_args()
 
 
@@ -369,3 +562,5 @@ if __name__ == "__main__":
         runner.run()
     except KeyboardInterrupt:
         print("\n[InekfDryRun] Exit.")
+    finally:
+        runner.close()
