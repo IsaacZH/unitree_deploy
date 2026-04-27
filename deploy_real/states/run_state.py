@@ -54,6 +54,10 @@ class RunState(BaseState):
         # Send command to robot
         self.controller.send_cmd(self.controller.low_cmd)
 
+        # B button triggers sit-down sequence.
+        if self.controller.remote_controller.button[KeyMap.B] == 1:
+            return "move_to_sit_pos"
+
         # Check for exit signal
         if self.controller.remote_controller.button[KeyMap.select] == 1:
             return "exit"

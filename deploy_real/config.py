@@ -33,6 +33,13 @@ class Config:
             self.fixstand_ts = config["FixStand"]["ts"]
             self.fixstand_qs = config["FixStand"]["qs"]
 
+            # SitDown config (optional); fallback keeps compatibility.
+            sitdown_cfg = config.get("SitDown", config["FixStand"])
+            self.sitdown_kp = sitdown_cfg["kp"]
+            self.sitdown_kd = sitdown_cfg["kd"]
+            self.sitdown_ts = sitdown_cfg["ts"]
+            self.sitdown_qs = sitdown_cfg["qs"]
+
             # Optional depth camera config
             self.depth_camera = config.get("depth_camera", None)
             self.navigation = config["navigation"]

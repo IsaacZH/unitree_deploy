@@ -7,10 +7,12 @@ from unitree_sdk2py.idl.default import (
     unitree_go_msg_dds__LowCmd_,
     unitree_go_msg_dds__LowState_,
     unitree_go_msg_dds__SportModeState_,
+    nav_msgs_msg_dds__Odometry_,
 )
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_ as LowCmdGo
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_ as SportModeStateGo
+from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_ as OdometryGeo
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.go2.sport.sport_client import SportClient
@@ -30,6 +32,11 @@ from state_machine import StateMachine
 
 
 class Controller:
+    class _HighStateProxy:
+        def __init__(self):
+            self.position = np.zeros(3, dtype=np.float32)
+            self.velocity = np.zeros(3, dtype=np.float32)
+
     def __init__(self, config: Config, use_mujoco: bool = False, keyboard: bool = False) -> None:
         self.config = config
         self.use_mujoco = use_mujoco
@@ -69,7 +76,8 @@ class Controller:
 
         self.low_cmd = unitree_go_msg_dds__LowCmd_()
         self.low_state = unitree_go_msg_dds__LowState_()
-        self.high_state = unitree_go_msg_dds__SportModeState_()
+        self.high_state = unitree_go_msg_dds__SportModeState_() if use_mujoco else self._HighStateProxy()
+        self.inekf_odom = nav_msgs_msg_dds__Odometry_()
 
         self.lowcmd_publisher_ = ChannelPublisher("rt/lowcmd", LowCmdGo)
         self.lowcmd_publisher_.Init()
@@ -80,8 +88,12 @@ class Controller:
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
-        self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
-        self.highstate_subscriber.Init(self.HighStateGoHandler, 10)
+        if use_mujoco:
+            self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
+            self.highstate_subscriber.Init(self.HighStateGoHandler, 10)
+        else:
+            self.odom_subscriber = ChannelSubscriber("rt/inekf/odom", OdometryGeo)
+            self.odom_subscriber.Init(self.OdomHandler, 10)
 
         if not use_mujoco:
             self.wait_for_low_state()
@@ -116,6 +128,17 @@ class Controller:
 
     def HighStateGoHandler(self, msg: SportModeStateGo):
         self.high_state = msg
+
+    def OdomHandler(self, msg: OdometryGeo):
+        self.inekf_odom = msg
+        self.high_state.position = np.array(
+            [msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z],
+            dtype=np.float32,
+        )
+        self.high_state.velocity = np.array(
+            [msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z],
+            dtype=np.float32,
+        )
 
     def update_control_input(self):
         if self.keyboard_controller is not None:

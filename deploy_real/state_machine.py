@@ -26,10 +26,11 @@ class StateMachine:
 
     def _register_states(self):
         """Register all available states."""
-        from states import ZeroTorqueState, MoveToDefaultPosState, RunState
+        from states import ZeroTorqueState, MoveToDefaultPosState, MoveToSitPosState, RunState
 
         self.states["zero_torque"] = ZeroTorqueState(self.controller)
         self.states["move_to_default_pos"] = MoveToDefaultPosState(self.controller)
+        self.states["move_to_sit_pos"] = MoveToSitPosState(self.controller)
         self.states["run"] = RunState(self.controller)
 
     def switch_to_state(self, state_name: str):

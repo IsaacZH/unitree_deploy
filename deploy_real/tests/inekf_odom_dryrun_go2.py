@@ -44,6 +44,9 @@ class InekfOdomEstimator:
         contact_noise: float = 1.0e-3,
         joint_position_noise: float = 1.0e-3,
         contact_velocity_noise: float = 1.0e-3,
+        reset_min_contact_count: int = 1,
+        reset_loss_duration_s: float = 0.4,
+        reinit_contact_duration_s: float = 0.15,
         urdf_path: Optional[str] = None,
     ):
         import pinocchio as pin
@@ -57,6 +60,14 @@ class InekfOdomEstimator:
         self.base_frame = base_frame
         self.contact_threshold = float(contact_threshold)
         self.pause = True
+        self.reset_min_contact_count = int(reset_min_contact_count)
+
+        # If contact quality is poor for long enough (e.g. sit/stand transition),
+        # reset and wait for stable full contact before re-initializing.
+        self._low_contact_steps = 0
+        self._full_contact_steps = 0
+        self._reset_loss_steps = max(1, int(float(reset_loss_duration_s) / self.dt))
+        self._reinit_contact_steps = max(1, int(float(reinit_contact_duration_s) / self.dt))
 
         self.joint_pos_noise = float(joint_position_noise)
         self.contact_vel_noise = float(contact_velocity_noise)
@@ -145,6 +156,8 @@ class InekfOdomEstimator:
         return q_pin, v_pin, f_pin
 
     def _initialize_filter(self, state_msg):
+        self._low_contact_steps = 0
+        self._full_contact_steps = 0
         q, v, _ = self._get_qvf_pinocchio(state_msg)
 
         # Unitree IMU quat is wxyz, Pinocchio free-flyer quaternion is xyzw.
@@ -233,14 +246,34 @@ class InekfOdomEstimator:
             ]
         )
         contact_list, pose_list, normed_covariance_list = self._feet_transformations(lowstate_msg)
+        contact_count = int(sum(contact_list))
+        full_contact = bool(all(contact_list))
 
         if self.pause:
-            if all(contact_list):
-                self.pause = False
-                self._initialize_filter(lowstate_msg)
-                print("[InekfDryRun] All feet in contact, starting filter.")
+            if full_contact:
+                self._full_contact_steps += 1
+                if self._full_contact_steps >= self._reinit_contact_steps:
+                    self.pause = False
+                    self._initialize_filter(lowstate_msg)
+                    print("[InekfDryRun] Full contact stable, filter re-initialized.")
             else:
+                self._full_contact_steps = 0
                 return None
+
+        if contact_count <= self.reset_min_contact_count:
+            self._low_contact_steps += 1
+        else:
+            self._low_contact_steps = 0
+
+        if self._low_contact_steps >= self._reset_loss_steps:
+            if not self.pause:
+                print(
+                    "[InekfDryRun] Contact lost for too long "
+                    f"(count={contact_count}), resetting filter and waiting for stable full contact."
+                )
+            self.pause = True
+            self._full_contact_steps = 0
+            return None
 
         self.filter.propagate(imu_state, self.dt)
 
@@ -287,6 +320,9 @@ class InekfDryRunRunner:
             contact_noise=args.contact_noise,
             joint_position_noise=args.joint_position_noise,
             contact_velocity_noise=args.contact_velocity_noise,
+            reset_min_contact_count=args.reset_min_contact_count,
+            reset_loss_duration_s=args.reset_loss_duration,
+            reinit_contact_duration_s=args.reinit_contact_duration,
             urdf_path=args.urdf_path,
         )
 
@@ -540,6 +576,24 @@ def parse_args():
     parser.add_argument("--contact-noise", type=float, default=1.0e-3)
     parser.add_argument("--joint-position-noise", type=float, default=1.0e-3)
     parser.add_argument("--contact-velocity-noise", type=float, default=1.0e-3)
+    parser.add_argument(
+        "--reset-min-contact-count",
+        type=int,
+        default=1,
+        help="reset filter when contact count stays <= this value for reset-loss-duration",
+    )
+    parser.add_argument(
+        "--reset-loss-duration",
+        type=float,
+        default=0.4,
+        help="seconds of low contact required to trigger filter reset",
+    )
+    parser.add_argument(
+        "--reinit-contact-duration",
+        type=float,
+        default=0.15,
+        help="seconds of full contact required before re-initializing filter",
+    )
 
     parser.add_argument(
         "--urdf-path",
