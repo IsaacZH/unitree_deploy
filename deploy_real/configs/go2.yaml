@@ -6,7 +6,7 @@ default_joint_pos: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, 
 
 control_dt: 0.02
 
-policy_path: "pre_train/himloco_lab/policy_2025.pt"
+policy_path: "pre_train/test_policy/2026-04-25_16-09-15.pt"
 
 depth_camera:
   topic: "rt/depth_image"
@@ -16,35 +16,33 @@ depth_camera:
   encoder_path: "pre_train/depth_encoder/vae_pretrain_new.pth"
   feature_dim: 64
   device: "cpu"
+  # Noise and visualization (optional)
+  enable_noise: true         # Set to true to inject stereo depth noise
+  focal_length: 391.9765      # D435i focal length (pixels)
+  baseline: 0.049974          # D435i stereo baseline (meters)
+  use_jit_precompiled: false  # JIT compilation for speed (experimental)
+  visualize_depth: false      # Set to true to visualize noisy depth frames
 
 commands:
   base_velocity:
     ranges:
-      lin_vel_x: [-1.5, 1.5]
+      lin_vel_x: [-1.0, 1.0]
       lin_vel_y: [-1.0, 1.0]
-      ang_vel_z: [-2.0, 2.0]
+      ang_vel_z: [-1.5, 1.5]
       heading: null
 
 navigation:
   enabled: true
   switch_button: "X"
-  command_rate_hz: 5.0
+  command_rate_hz: 10.0
   fixed_target_position: [0.0, 0.0, 0.5]
-  use_raw_actions: true
-  action_scale: [1.0, 1.0, 1.0]
-  action_offset: [0.0, 0.0, 0.0]
+  action_clip:
+    - [-1.0, -1.0, -1.0]
+    - [1.0, 1.0, 1.0]
   policy_distr_type: "gaussian"
-  policy_scaling: [2.0, 1.0, 2.0]
-  policy_bias: [0.0, 0.0, 0.0]
-  low_pass_filter:
-    enabled: true
-    alpha: [0.5, 0.5, 0.5]
   policy_path: "pre_train/navigation/policy.pt"
   device: "cpu"
   policy_input:
-    base_lin_vel:
-      clip: [-100, 100]
-      scale: 1.0
     base_ang_vel:
       clip: [-100, 100]
       scale: 1.0

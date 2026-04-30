@@ -73,7 +73,8 @@ def base_ang_vel(raw_state, _config):
 @register_term("base_lin_vel")
 def base_lin_vel(raw_state, _config):
     if hasattr(raw_state, "high_state") and raw_state.high_state is not None:
-        return np.asarray(raw_state.high_state.velocity, dtype=np.float32).ravel()
+        vel = np.asarray(raw_state.high_state.velocity, dtype=np.float32).ravel()
+        return np.array([vel[1], vel[0], vel[2]], dtype=np.float32)
     return np.zeros(3, dtype=np.float32)
 
 

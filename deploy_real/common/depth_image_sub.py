@@ -22,6 +22,7 @@ Typical usage
 from collections import OrderedDict
 from dataclasses import dataclass
 import threading
+import os
 
 import numpy as np
 import torch
@@ -35,6 +36,18 @@ import cyclonedds.idl.types as types
 
 from unitree_sdk2py.core.channel import ChannelSubscriber
 from unitree_sdk2py.idl.std_msgs.msg.dds_ import Header_
+
+from .depth_noise import DepthNoise
+
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
+# Global depth visualization windows (persistent across frames)
+_DEPTH_VIZ_WINDOWS = {}
+_VIZ_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +181,55 @@ class DepthImageObserver:
         encoder_path: str,
         feature_dim: int,
         device: str = "cpu",
+        enable_noise: bool = False,
+        focal_length: float | None = None,
+        baseline: float | None = None,
+        use_jit_precompiled: bool = False,
+        visualize_depth: bool = False,
     ):
+        """Initialize depth image observer with optional noise injection.
+        
+        Parameters
+        ----------
+        topic:             DDS topic string, e.g. "rt/depth_image"
+        min_depth:         Minimum valid depth in metres (pixels below → 0)
+        max_depth:         Maximum valid depth in metres (pixels above → 0)
+        target_resolution: (width, height) to crop the incoming frame to
+        encoder_path:      Path to vae_pretrain_new.pth checkpoint
+        feature_dim:       Latent dimension (must match checkpoint, typically 64)
+        device:            Torch device string, e.g. "cpu" or "cuda:0"
+        enable_noise:      If True, apply stereo depth noise before encoding (default False)
+        focal_length:      Camera focal length in pixels (required if enable_noise=True)
+        baseline:          Stereo baseline in metres (required if enable_noise=True)
+        use_jit_precompiled: If True, use JIT-compiled encoder for speed (default False)
+        visualize_depth:   If True, visualize noisy depth frames (requires enable_noise=True)
+        """
         self.min_depth  = min_depth
         self.max_depth  = max_depth
         self.target_w, self.target_h = target_resolution  # (W, H)
         self.device     = torch.device(device)
         self.feature_dim = feature_dim
+        self.enable_noise = enable_noise
+        self.use_jit_precompiled = use_jit_precompiled
+        self.visualize_depth = visualize_depth
+
+        # Initialize noise simulator if enabled
+        if enable_noise:
+            if focal_length is None or baseline is None:
+                raise ValueError(
+                    f"enable_noise=True requires focal_length and baseline. "
+                    f"Got focal_length={focal_length}, baseline={baseline}"
+                )
+            self._noise_simulator = DepthNoise(
+                focal_length=focal_length,
+                baseline=baseline,
+                min_depth=min_depth,
+                max_depth=max_depth,
+            ).to(self.device)
+            self._noise_simulator.eval()
+            print(f"[DepthImageObserver] Depth noise enabled: focal_length={focal_length}, baseline={baseline}")
+        else:
+            self._noise_simulator = None
 
         # Load encoder weights.  Only keep keys for depth_encoder and
         # vae_sampler; the checkpoint may also contain depth_decoder keys
@@ -200,6 +256,7 @@ class DepthImageObserver:
         self._latest_feature: np.ndarray = np.zeros(self._encoded_flat_dim, dtype=np.float32)
         self._latest_depth_image: np.ndarray | None = None
         self._latest_depth_scale: float = 0.0
+        self._latest_noisy_depth: torch.Tensor | None = None  # For visualization only
         self._frame_version: int = 0
         self._encoded_version: int = -1
         self._lock = threading.Lock()
@@ -208,6 +265,8 @@ class DepthImageObserver:
         self._sub = ChannelSubscriber(topic, DepthImage_)
         self._sub.Init(self._on_message, 10)
         print(f"[DepthImageObserver] Subscribed to topic: {topic}")
+        if self.visualize_depth:
+            print(f"[DepthImageObserver] Depth visualization enabled")
 
     # ------------------------------------------------------------------
     # Preprocessing
@@ -232,6 +291,81 @@ class DepthImageObserver:
         t[t < self.min_depth] = 0.0
         return t
 
+    def _apply_noise(self, depth_tensor: torch.Tensor) -> torch.Tensor:
+        """Apply stereo depth noise if enabled.
+        
+        Parameters
+        ----------
+        depth_tensor:  Preprocessed depth tensor [1, 1, H, W]
+        
+        Returns
+        -------
+        Noisy depth tensor [1, 1, H, W], or original if noise disabled.
+        """
+        if not self.enable_noise or self._noise_simulator is None:
+            return depth_tensor
+        
+        with torch.no_grad():
+            noisy_depth = self._noise_simulator(depth_tensor, add_noise=True)
+        
+        # Store for visualization (doesn't affect encoded feature cache)
+        self._latest_noisy_depth = noisy_depth.detach()
+        return noisy_depth
+
+    def _visualize_noisy_depth(self):
+        """Update persistent matplotlib window with latest noisy depth (matching lab style).
+        
+        Creates/updates a persistent window for continuous non-blocking visualization.
+        Uses the same colormap and styling as the training environment.
+        """
+        if not (self.visualize_depth and self._latest_noisy_depth is not None):
+            return
+        
+        if not HAS_MATPLOTLIB:
+            return
+        
+        try:
+            # Extract noisy depth to numpy [H, W]
+            noisy_np = self._latest_noisy_depth[0, 0].cpu().numpy()
+            h, w = noisy_np.shape
+            
+            with _VIZ_LOCK:
+                camera_name = f"depth_camera_{id(self)}"  # Unique ID per observer
+                
+                # Lazily create window (matching lab visualization style)
+                if camera_name not in _DEPTH_VIZ_WINDOWS:
+                    plt.ion()  # Interactive mode for non-blocking updates
+                    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                    im = ax.imshow(noisy_np, cmap="plasma", aspect="equal")
+                    cbar = plt.colorbar(im, ax=ax, label="Depth (meters)")
+                    ax.set_title(f"Noisy Depth (Deploy) [{h}x{w}]")
+                    ax.set_xlabel("Width (pixels)")
+                    ax.set_ylabel("Height (pixels)")
+                    _DEPTH_VIZ_WINDOWS[camera_name] = {
+                        "fig": fig,
+                        "ax": ax,
+                        "im": im,
+                        "cbar": cbar
+                    }
+                    self._viz_is_ready = True
+                
+                # Update existing window
+                if camera_name in _DEPTH_VIZ_WINDOWS:
+                    handle = _DEPTH_VIZ_WINDOWS[camera_name]
+                    handle["im"].set_data(noisy_np)
+                    
+                    # Auto-scale colorbar to current depth range
+                    vmin = noisy_np.min()
+                    vmax = noisy_np.max()
+                    if vmax > vmin:  # Avoid divide by zero
+                        handle["im"].set_clim(vmin=vmin, vmax=vmax)
+                    
+                    # Non-blocking update (matching lab behavior)
+                    handle["fig"].canvas.draw_idle()
+                    plt.pause(0.001)
+        except Exception as e:
+            print(f"[DepthImageObserver] Visualization error: {e}")
+
     # ------------------------------------------------------------------
     # DDS callback
     # ------------------------------------------------------------------
@@ -254,6 +388,7 @@ class DepthImageObserver:
         """Return latest flattened encoded depth feature (copy)."""
         with self._lock:
             if self._encoded_version == self._frame_version:
+                self._visualize_noisy_depth()
                 return self._latest_feature.copy()
             if self._latest_depth_image is None:
                 return self._latest_feature.copy()
@@ -261,7 +396,16 @@ class DepthImageObserver:
             depth_scale = self._latest_depth_scale
             frame_version = self._frame_version
 
+        # Preprocess: uint16 → float32 metres in [B, 1, H, W]
         depth_tensor = self._preprocess(depth_image, depth_scale).to(self.device)
+        
+        # Optional noise injection before encoding
+        depth_tensor = self._apply_noise(depth_tensor)
+        
+        # Visualize noisy depth if enabled (non-blocking)
+        self._visualize_noisy_depth()
+        
+        # Encode to feature
         with torch.no_grad():
             feat_map = self._encoder(depth_tensor)        # [1, C, H', W']
             feat = feat_map.contiguous().view(-1)         # [C * H' * W']

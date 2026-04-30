@@ -113,6 +113,11 @@ class Controller:
                 encoder_path=dc["encoder_path"],
                 feature_dim=dc["feature_dim"],
                 device=dc["device"],
+                enable_noise=dc.get("enable_noise", False),
+                focal_length=dc.get("focal_length", None),
+                baseline=dc.get("baseline", None),
+                use_jit_precompiled=dc.get("use_jit_precompiled", False),
+                visualize_depth=dc.get("visualize_depth", False),
             )
         else:
             self.depth_observer = None

@@ -28,36 +28,11 @@ class NavigationCommandManager:
         self._has_cached_command = False
         self._cached_navigation_command = np.zeros(3, dtype=np.float32)
         self._fixed_target = np.asarray(self._cfg["fixed_target_position"], dtype=np.float32)
-        self._use_raw_actions = bool(self._cfg["use_raw_actions"])
-        self._action_scale = np.asarray(self._cfg["action_scale"], dtype=np.float32).ravel()
-        self._action_offset = np.asarray(self._cfg["action_offset"], dtype=np.float32).ravel()
-        self._policy_scaling = np.asarray(self._cfg["policy_scaling"], dtype=np.float32).ravel()
-        self._policy_bias = np.asarray(self._cfg["policy_bias"], dtype=np.float32).ravel()
+        self._action_clip_min, self._action_clip_max = self._parse_action_clip(self._cfg.get("action_clip"))
+
         self._policy_distr_type = str(self._cfg["policy_distr_type"])
-        self._low_pass_filter_cfg = self._cfg["low_pass_filter"]
-        self._low_pass_enabled = bool(self._low_pass_filter_cfg["enabled"])
-        self._low_pass_alpha = np.asarray(self._low_pass_filter_cfg["alpha"], dtype=np.float32).ravel()
+
         self._prev_filtered_velocity_command = np.zeros(3, dtype=np.float32)
-        if self._action_scale.shape[0] != 3:
-            raise ValueError(
-                f"navigation.action_scale must be 3D [sx, sy, sw], got shape {self._action_scale.shape}"
-            )
-        if self._action_offset.shape[0] != 3:
-            raise ValueError(
-                f"navigation.action_offset must be 3D [ox, oy, ow], got shape {self._action_offset.shape}"
-            )
-        if self._policy_scaling.shape[0] != 3:
-            raise ValueError(
-                f"navigation.policy_scaling must be 3D [vx, vy, wz], got shape {self._policy_scaling.shape}"
-            )
-        if self._policy_bias.shape[0] != 3:
-            raise ValueError(
-                f"navigation.policy_bias must be 3D [bx, by, bw], got shape {self._policy_bias.shape}"
-            )
-        if self._low_pass_alpha.shape[0] != 3:
-            raise ValueError(
-                f"navigation.low_pass_filter.alpha must be 3D [ax, ay, aw], got shape {self._low_pass_alpha.shape}"
-            )
 
         self._policy_input = self._cfg["policy_input"]
         self._input_names = list(self._policy_input.keys())
@@ -71,6 +46,33 @@ class NavigationCommandManager:
         if isinstance(button_name, str) and hasattr(KeyMap, button_name):
             return int(getattr(KeyMap, button_name))
         raise ValueError(f"Invalid navigation.switch_button: {button_name}")
+
+    @staticmethod
+    def _parse_action_clip(action_clip_cfg):
+        if action_clip_cfg is None:
+            return None, None
+
+        action_clip = np.asarray(action_clip_cfg, dtype=np.float32)
+        if action_clip.shape == (2,):
+            clip_min = np.full(3, action_clip[0], dtype=np.float32)
+            clip_max = np.full(3, action_clip[1], dtype=np.float32)
+        elif action_clip.shape == (2, 3):
+            clip_min = action_clip[0].astype(np.float32).copy()
+            clip_max = action_clip[1].astype(np.float32).copy()
+        elif action_clip.shape == (3, 2):
+            clip_min = action_clip[:, 0].astype(np.float32).copy()
+            clip_max = action_clip[:, 1].astype(np.float32).copy()
+        else:
+            raise ValueError(
+                "navigation.action_clip must be [min, max], [[min_x, min_y, min_w], [max_x, max_y, max_w]], "
+                f"or [[min_x, max_x], [min_y, max_y], [min_w, max_w]], got shape {action_clip.shape}"
+            )
+
+        if np.any(clip_min > clip_max):
+            raise ValueError(
+                f"navigation.action_clip min values must be <= max values, got min={clip_min}, max={clip_max}"
+            )
+        return clip_min, clip_max
 
     def _load_policy(self):
         if not self.enabled:
@@ -145,14 +147,6 @@ class NavigationCommandManager:
     def _term_value_provider(self, name, raw_state, config):
         return self._terms[name](raw_state, config)
 
-    def _apply_low_pass_filter(self, velocity_command):
-        if not self._low_pass_enabled:
-            return velocity_command
-        alpha = self._low_pass_alpha
-        filtered = alpha * self._prev_filtered_velocity_command + (1.0 - alpha) * velocity_command
-        self._prev_filtered_velocity_command = filtered.astype(np.float32).copy()
-        return filtered
-
     def build_navigation_obs(self, raw_state, config):
         nav_obs = collect_scaled_terms(
             raw_state=raw_state,
@@ -189,9 +183,6 @@ class NavigationCommandManager:
         if nav_cmd.shape[0] != 3:
             raise ValueError(f"Navigation command must be 3D (vx, vy, wz), got shape {nav_cmd.shape}")
 
-        if not self._use_raw_actions:
-            nav_cmd = nav_cmd * self._action_scale + self._action_offset
-
         if self._policy_distr_type == "gaussian":
             nav_cmd = np.tanh(nav_cmd)
         elif self._policy_distr_type == "beta":
@@ -199,14 +190,8 @@ class NavigationCommandManager:
         else:
             raise ValueError(f"Unknown navigation.policy_distr_type: {self._policy_distr_type}")
 
-        if hasattr(raw_state, "high_state") and raw_state.high_state is not None and hasattr(raw_state.high_state, "velocity"):
-            base_lin_vel = np.asarray(raw_state.high_state.velocity, dtype=np.float32).ravel()[:3]
-            vel_xyz = float(np.linalg.norm(base_lin_vel))
-        else:
-            vel_xyz = 0.0
-
-        nav_cmd = (nav_cmd + vel_xyz * self._policy_bias) * self._policy_scaling
-        nav_cmd = self._apply_low_pass_filter(nav_cmd)
+        if self._action_clip_min is not None:
+            nav_cmd = np.clip(nav_cmd, self._action_clip_min, self._action_clip_max)
         self._cached_navigation_command = np.asarray(nav_cmd, dtype=np.float32).copy()
         self._has_cached_command = True
         self._last_command_time = now
