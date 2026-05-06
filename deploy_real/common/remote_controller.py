@@ -31,9 +31,24 @@ class RemoteController:
     def set(self, data):
         # wireless_remote
         keys = struct.unpack("H", data[2:4])[0]
+        self.set_from_key_mask(keys)
+        self.set_axes(
+            lx=struct.unpack("f", data[4:8])[0],
+            rx=struct.unpack("f", data[8:12])[0],
+            ry=struct.unpack("f", data[12:16])[0],
+            ly=struct.unpack("f", data[20:24])[0],
+        )
+
+    def set_axes(self, lx: float, ly: float, rx: float, ry: float):
+        self.lx = float(lx)
+        self.ly = float(ly)
+        self.rx = float(rx)
+        self.ry = float(ry)
+
+    def set_from_key_mask(self, keys: int):
         for i in range(16):
             self.button[i] = (keys & (1 << i)) >> i
-        self.lx = struct.unpack("f", data[4:8])[0]
-        self.rx = struct.unpack("f", data[8:12])[0]
-        self.ry = struct.unpack("f", data[12:16])[0]
-        self.ly = struct.unpack("f", data[20:24])[0]
+
+    def set_buttons(self, buttons):
+        for i in range(16):
+            self.button[i] = int(bool(buttons[i])) if i < len(buttons) else 0

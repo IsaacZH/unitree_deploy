@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import torch
+import threading
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber
 from unitree_sdk2py.idl.default import (
@@ -20,10 +21,10 @@ from unitree_sdk2py.go2.sport.sport_client import SportClient
 from common.command_helper import init_cmd_go
 from common.remote_controller import RemoteController
 from common.depth_image_sub import DepthImageObserver
-from common.keyboard_controller import KeyboardController
 from common.navigation_command_manager import NavigationCommandManager
 from common.nav_debug_dds import NavDebug_, create_nav_debug_message
 from common.nav_target_dds import NavTarget_, create_nav_target_message
+from keyboard.keyboard_command_dds import KeyboardCommand_
 from config import Config
 from terms import TERMS
 from observation_manager import ObservationManager, PolicyInputManager
@@ -37,11 +38,15 @@ class Controller:
             self.position = np.zeros(3, dtype=np.float32)
             self.velocity = np.zeros(3, dtype=np.float32)
 
-    def __init__(self, config: Config, use_mujoco: bool = False, keyboard: bool = False) -> None:
+    def __init__(self, config: Config, use_mujoco: bool = False, keyboard: bool = False, keyboard_topic: str = "rt/wireless_remote") -> None:
         self.config = config
         self.use_mujoco = use_mujoco
         self.keyboard_mode = keyboard
+        self.keyboard_topic = keyboard_topic
         self.remote_controller = RemoteController()
+        self._keyboard_lock = threading.Lock()
+        self._keyboard_target_update = None
+        self._keyboard_rx_count = 0
 
         self.policy = torch.jit.load(config.policy_path)
         self.actor = self.policy.actor
@@ -59,11 +64,7 @@ class Controller:
 
         self.target_dof_pos = config.default_joint_pos.copy()
         self.navigation_manager = NavigationCommandManager(config.navigation, TERMS)
-        self.keyboard_controller = (
-            KeyboardController(initial_target_position=self.navigation_manager.get_target_position())
-            if self.keyboard_mode
-            else None
-        )
+        self.keyboard_controller = None
 
         
         if not use_mujoco:
@@ -88,6 +89,10 @@ class Controller:
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
+        if self.keyboard_mode:
+            self.keyboard_subscriber = ChannelSubscriber(self.keyboard_topic, KeyboardCommand_)
+            self.keyboard_subscriber.Init(self.KeyboardCmdHandler, 10)
+            print(f"[Controller] Keyboard DDS enabled, subscribed: {self.keyboard_topic}")
         if use_mujoco:
             self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
             self.highstate_subscriber.Init(self.HighStateGoHandler, 10)
@@ -135,6 +140,22 @@ class Controller:
     def HighStateGoHandler(self, msg: SportModeStateGo):
         self.high_state = msg
 
+    def KeyboardCmdHandler(self, msg: KeyboardCommand_):
+        buttons = [int(v) for v in msg.buttons[:16]]
+        with self._keyboard_lock:
+            self.remote_controller.set_axes(
+                lx=float(msg.lx),
+                ly=float(msg.ly),
+                rx=float(msg.rx),
+                ry=float(msg.ry),
+            )
+            self.remote_controller.set_buttons(buttons)
+            self._keyboard_rx_count += 1
+            if bool(msg.has_target_update):
+                target = np.asarray(msg.target_world, dtype=np.float32).ravel()
+                if target.shape[0] >= 3:
+                    self._keyboard_target_update = target[:3].copy()
+
     def OdomHandler(self, msg: OdometryGeo):
         self.inekf_odom = msg
         self.high_state.position = np.array(
@@ -147,14 +168,15 @@ class Controller:
         )
 
     def update_control_input(self):
-        if self.keyboard_controller is not None:
-            self.keyboard_controller.update_remote(self.remote_controller)
-            target_update = self.keyboard_controller.consume_target_position_update()
+        if self.keyboard_mode:
+            with self._keyboard_lock:
+                target_update = self._keyboard_target_update
+                self._keyboard_target_update = None
             if target_update is not None:
                 self.navigation_manager.set_target_position(target_update)
                 self.publish_target_update(target_update)
                 print(
-                    "[Navigation] Target updated from keyboard: "
+                    "[Navigation] Target updated from keyboard DDS: "
                     f"({target_update[0]:.3f}, {target_update[1]:.3f}, {target_update[2]:.3f})"
                 )
         self.navigation_manager.update_control_source(self.remote_controller.button)
@@ -173,8 +195,7 @@ class Controller:
         self.nav_debug_publisher_.Write(msg)
 
     def close(self):
-        if self.keyboard_controller is not None:
-            self.keyboard_controller.close()
+        pass
 
     def send_cmd(self, cmd: LowCmdGo):
         cmd.crc = CRC().Crc(cmd)
@@ -202,7 +223,8 @@ if __name__ == "__main__":
     parser.add_argument("net", type=str, help="network interface")
     parser.add_argument("config", type=str, help="config file name in the configs folder")
     parser.add_argument("--mujoco", action="store_true", help="use mujoco simulation")
-    parser.add_argument("--keyboard", action="store_true", help="use keyboard for state transitions and velocity commands")
+    parser.add_argument("--keyboard", action="store_true", help="use keyboard DDS topic for state transitions and velocity commands")
+    parser.add_argument("--keyboard-topic", type=str, default="rt/wireless_remote", help="DDS topic for keyboard command stream")
     args = parser.parse_args()
 
     config_path = f"deploy_real/configs/{args.config}"
@@ -210,7 +232,12 @@ if __name__ == "__main__":
 
     ChannelFactoryInitialize(0, args.net)
 
-    controller = Controller(config, use_mujoco=args.mujoco, keyboard=args.keyboard)
+    controller = Controller(
+        config,
+        use_mujoco=args.mujoco,
+        keyboard=args.keyboard,
+        keyboard_topic=args.keyboard_topic,
+    )
 
     if not args.mujoco:
         controller.shut_down_control_service()

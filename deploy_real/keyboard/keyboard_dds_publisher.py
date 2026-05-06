@@ -1,17 +1,27 @@
-import time
+import argparse
 import math
+import os
+import sys
+import time
+
 import numpy as np
 import pygame
 
+DEPLOY_REAL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if DEPLOY_REAL_DIR not in sys.path:
+    sys.path.insert(0, DEPLOY_REAL_DIR)
+
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher
 from common.remote_controller import KeyMap
+from keyboard.keyboard_command_dds import KeyboardCommand_, create_keyboard_command_message
 
 
-class KeyboardController:
-    """Terminal keyboard input for RemoteController-compatible commands."""
+class KeyboardDDSPublisher:
+    def __init__(self, args):
+        self.args = args
 
-    def __init__(self, initial_target_position=None):
         pygame.init()
-        pygame.display.set_caption("Keyboard Controller")
+        pygame.display.set_caption("Keyboard DDS Controller")
         self._window = pygame.display.set_mode((980, 300))
         self._font = pygame.font.SysFont("monospace", 30)
         self._font_small = pygame.font.SysFont("monospace", 24)
@@ -33,15 +43,12 @@ class KeyboardController:
         self._axis_active = {k: False for k in self._axis_keycode}
         self._axis_press_start = {k: 0.0 for k in self._axis_keycode}
         self._button_pulse = [0] * 16
+
         self._target_input_active = False
-        self._target_position = (
-            np.asarray(initial_target_position, dtype=np.float32).ravel().copy()
-            if initial_target_position is not None
-            else np.zeros(3, dtype=np.float32)
-        )
+        self._target_position = np.asarray(args.initial_target, dtype=np.float32).ravel().copy()
         if self._target_position.shape[0] != 3:
             self._target_position = np.zeros(3, dtype=np.float32)
-        self._target_updated = False
+        self._pending_target_update = None
         self._target_error = ""
         self._target_labels = ["X", "Y", "Z"]
         self._target_text_fields = [f"{v:.3f}" for v in self._target_position]
@@ -54,11 +61,15 @@ class KeyboardController:
             pygame.Rect(120 + i * 300, 165, 240, 58) for i in range(3)
         ]
 
+        ChannelFactoryInitialize(0, args.net)
+        self._pub = ChannelPublisher(args.topic, KeyboardCommand_)
+        self._pub.Init()
+
+        print(f"[KeyboardDDS] Publishing topic: {args.topic}")
         print(
-            "Keyboard control enabled: "
+            "[KeyboardDDS] Controls: "
             "[w/s]=forward/back, [a/d]=left/right, [q/e]=yaw, "
-            "[1]=start, [2]=A, [3]=select, [4/x]=X, [t]=edit target xyz boxes. "
-            "Keep the 'Keyboard Controller' window focused."
+            "[1]=start, [2]=A, [3]=select, [4/x]=X, [t]=edit target xyz"
         )
 
     def close(self):
@@ -151,7 +162,7 @@ class KeyboardController:
             self._target_error = "Invalid number format"
             return
         self._target_position = values
-        self._target_updated = True
+        self._pending_target_update = values.copy()
         self._target_input_active = False
         pygame.key.stop_text_input()
         self._target_select_all = [False, False, False]
@@ -183,12 +194,6 @@ class KeyboardController:
         if is_double_click:
             self._target_select_all = [False, False, False]
             self._target_select_all[clicked_index] = True
-
-    def consume_target_position_update(self):
-        if not self._target_updated:
-            return None
-        self._target_updated = False
-        return self._target_position.copy()
 
     def _draw_ui(self):
         self._window.fill(self._bg_color)
@@ -229,35 +234,75 @@ class KeyboardController:
             self._window.blit(value, (rect.x + 48, rect.y + 15))
         pygame.display.flip()
 
-    def update_remote(self, remote):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.close()
-                raise SystemExit(0)
-            if event.type == pygame.KEYDOWN:
-                self._on_keydown(event.key)
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self._on_mouse_buttondown(event.pos)
-            elif event.type == pygame.TEXTINPUT:
-                self._on_text_input(event.text)
+    def run(self):
+        publish_dt = 1.0 / max(self.args.publish_hz, 1e-6)
+        next_pub = time.monotonic()
+        try:
+            while True:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        return
+                    if event.type == pygame.KEYDOWN:
+                        self._on_keydown(event.key)
+                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        self._on_mouse_buttondown(event.pos)
+                    elif event.type == pygame.TEXTINPUT:
+                        self._on_text_input(event.text)
 
-        now = time.monotonic()
-        pressed = pygame.key.get_pressed()
-        if not self._target_input_active:
-            self._update_axis_state(now, pressed)
-        else:
-            for key in self._axis_active:
-                self._axis_active[key] = False
+                now = time.monotonic()
+                pressed = pygame.key.get_pressed()
+                if not self._target_input_active:
+                    self._update_axis_state(now, pressed)
+                else:
+                    for key in self._axis_active:
+                        self._axis_active[key] = False
 
-        lx = self._harmonic_gain("d", now) - self._harmonic_gain("a", now)
-        ly = self._harmonic_gain("w", now) - self._harmonic_gain("s", now)
-        rx = self._harmonic_gain("e", now) - self._harmonic_gain("q", now)
+                lx = self._harmonic_gain("d", now) - self._harmonic_gain("a", now)
+                ly = self._harmonic_gain("w", now) - self._harmonic_gain("s", now)
+                rx = self._harmonic_gain("e", now) - self._harmonic_gain("q", now)
 
-        remote.lx = float(self._clamp(lx))
-        remote.ly = float(self._clamp(ly))
-        remote.rx = float(self._clamp(rx))
-        remote.ry = 0.0
-        for i in range(16):
-            remote.button[i] = self._button_pulse[i]
-        self._button_pulse = [0] * 16
-        self._draw_ui()
+                if now >= next_pub:
+                    next_pub += publish_dt
+                    target_update = self._pending_target_update
+                    msg = create_keyboard_command_message(
+                        buttons=self._button_pulse,
+                        lx=self._clamp(lx),
+                        ly=self._clamp(ly),
+                        rx=self._clamp(rx),
+                        ry=0.0,
+                        target_world=target_update,
+                    )
+                    self._pub.Write(msg)
+                    self._button_pulse = [0] * 16
+                    self._pending_target_update = None
+
+                self._draw_ui()
+                time.sleep(0.001)
+        finally:
+            self.close()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Publish pygame keyboard commands via DDS")
+    parser.add_argument("net", type=str, help="network interface")
+    parser.add_argument("--topic", type=str, default="rt/wireless_remote", help="DDS topic for keyboard remote command")
+    parser.add_argument("--publish-hz", type=float, default=50.0, help="DDS publish rate")
+    parser.add_argument(
+        "--initial-target",
+        type=float,
+        nargs=3,
+        default=[0.0, 0.0, 0.5],
+        metavar=("X", "Y", "Z"),
+        help="initial target position used by keyboard UI",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    app = KeyboardDDSPublisher(args)
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
