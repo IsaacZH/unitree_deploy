@@ -12,6 +12,9 @@ class RunState(BaseState):
 
     def enter(self):
         """Enter run state."""
+        nav_cfg = getattr(self.config, "navigation", {}) or {}
+        self._target_publish_period_s = float(nav_cfg.get("target_publish_period_s", 1.0))
+        self._next_target_publish_t = 0.0
         print("Enter run state. Starting policy control.")
 
     def execute(self) -> Optional[str]:
@@ -23,6 +26,12 @@ class RunState(BaseState):
         """
         # Build raw state from robot data
         raw_state = self._build_raw_state()
+
+        now = time.monotonic()
+        if now >= self._next_target_publish_t:
+            target_world = self.controller.navigation_manager.get_target_position()
+            self.controller.publish_target_update(target_world)
+            self._next_target_publish_t = now + max(self._target_publish_period_s, 1e-3)
 
         # Get observations from encoder and current state
         current_obs, encoder_output = self.controller.obs_manager.forward(raw_state)
