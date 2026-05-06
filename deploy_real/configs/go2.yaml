@@ -40,7 +40,7 @@ navigation:
     - [-1.0, -1.0, -1.0]
     - [1.0, 1.0, 1.0]
   policy_distr_type: "gaussian"
-  policy_path: "pre_train/navigation/policy.pt"
+  policy_path: "pre_train/navigation/2026-04-30_11-28-26.pt"
   device: "cpu"
   policy_input:
     base_ang_vel:

@@ -1,0 +1,8 @@
+numpy>=2.2.6
+PyYAML>=6.0.2
+typeguard>=4.0.0
+scipy>=1.16.0
+torch>=2.5.1
+torchvision>=0.20.1
+matplotlib>=3.10.9
+pygame>=2.6.1
