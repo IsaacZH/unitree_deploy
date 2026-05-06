@@ -16,12 +16,13 @@ depth_camera:
   encoder_path: "pre_train/depth_encoder/vae_pretrain_new.pth"
   feature_dim: 64
   device: "cpu"
-  # Noise and visualization (optional)
+  # Noise and visualization
   enable_noise: true         # Set to true to inject stereo depth noise
   focal_length: 391.9765      # D435i focal length (pixels)
   baseline: 0.049974          # D435i stereo baseline (meters)
   use_jit_precompiled: false  # JIT compilation for speed (experimental)
-  visualize_depth: false      # Set to true to visualize noisy depth frames
+  visualize_depth: true      # Set to true to publish noisy depth DDS for external visualization
+  visualize_topic: "debug/depth_image_noisy"  # DDS topic for noisy depth visualization stream
 
 commands:
   base_velocity:

@@ -118,6 +118,7 @@ class Controller:
                 baseline=dc.get("baseline", None),
                 use_jit_precompiled=dc.get("use_jit_precompiled", False),
                 visualize_depth=dc.get("visualize_depth", False),
+                visualize_topic=dc.get("visualize_topic", "rt/depth_image_noisy"),
             )
         else:
             self.depth_observer = None
