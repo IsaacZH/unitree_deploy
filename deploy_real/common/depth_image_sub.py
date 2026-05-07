@@ -252,7 +252,7 @@ class DepthImageObserver:
         self._latest_feature: np.ndarray = np.zeros(self._encoded_flat_dim, dtype=np.float32)
         self._latest_depth_image: np.ndarray | None = None
         self._latest_depth_scale: float = 0.0
-        self._latest_noisy_depth: torch.Tensor | None = None  # For visualization only
+        self._latest_viz_depth: torch.Tensor | None = None  # For visualization publish (raw or noisy)
         self._latest_intrinsics: DepthIntrinsics_ | None = None
         self._frame_version: int = 0
         self._encoded_version: int = -1
@@ -306,23 +306,25 @@ class DepthImageObserver:
         Noisy depth tensor [1, 1, H, W], or original if noise disabled.
         """
         if not self.enable_noise or self._noise_simulator is None:
+            # When noise is disabled, visualize preprocessed raw depth.
+            self._latest_viz_depth = depth_tensor.detach()
             return depth_tensor
         
         with torch.no_grad():
             noisy_depth = self._noise_simulator(depth_tensor, add_noise=True)
         
-        # Store for visualization (doesn't affect encoded feature cache)
-        self._latest_noisy_depth = noisy_depth.detach()
+        # When noise is enabled, visualize noisy depth.
+        self._latest_viz_depth = noisy_depth.detach()
         return noisy_depth
 
     def _publish_noisy_depth(self):
-        """Publish latest noisy depth as DDS message for external visualization."""
-        if not (self.visualize_depth and self._viz_publisher is not None and self._latest_noisy_depth is not None):
+        """Publish latest visualization depth as DDS message for external visualization."""
+        if not (self.visualize_depth and self._viz_publisher is not None and self._latest_viz_depth is not None):
             return
 
         try:
-            noisy_np = self._latest_noisy_depth[0, 0].detach().cpu().numpy()
-            depth_uint16 = np.clip(np.rint(noisy_np / 0.001), 0, np.iinfo(np.uint16).max).astype(np.uint16)
+            viz_np = self._latest_viz_depth[0, 0].detach().cpu().numpy()
+            depth_uint16 = np.clip(np.rint(viz_np / 0.001), 0, np.iinfo(np.uint16).max).astype(np.uint16)
             height, width = depth_uint16.shape
 
             if self._latest_intrinsics is not None:
