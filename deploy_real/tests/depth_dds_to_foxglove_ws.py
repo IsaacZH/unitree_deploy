@@ -21,6 +21,7 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscri
 from common.depth_image_sub import DepthImage_, _decode_depth_message
 from common.nav_debug_dds import NavDebug_
 from common.nav_target_dds import NavTarget_
+from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_ as OdometryGeo
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_ as SportModeStateGo
 
@@ -44,6 +45,12 @@ class DepthBridge:
         self._latest_depth = None
         self._latest_scale = None
         self._latest_stamp = None
+        self._latest_depth_width = 0
+        self._latest_depth_height = 0
+        self._latest_depth_fx = 0.0
+        self._latest_depth_fy = 0.0
+        self._latest_depth_cx = 0.0
+        self._latest_depth_cy = 0.0
         self._frames = 0
         self._latest_robot_pos = np.zeros(3, dtype=np.float32)
         self._latest_robot_yaw = 0.0
@@ -51,6 +58,7 @@ class DepthBridge:
         self._latest_target_pos = np.zeros(3, dtype=np.float32)
         self._latest_cmd_body = np.zeros(3, dtype=np.float32)
         self._plasma_cmap = cm.get_cmap("plasma")
+        self._q_robot_to_cam = self._robot_to_cam_quat_xyzw()
 
         self._init_foxglove()
         self._init_dds()
@@ -217,6 +225,55 @@ class DepthBridge:
             },
         }
 
+        pointcloud_schema = {
+            "type": "object",
+            "properties": {
+                "timestamp": {
+                    "type": "object",
+                    "properties": {
+                        "sec": {"type": "integer"},
+                        "nsec": {"type": "integer"},
+                    },
+                },
+                "frame_id": {"type": "string"},
+                "pose": {
+                    "type": "object",
+                    "properties": {
+                        "position": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "z": {"type": "number"},
+                            },
+                        },
+                        "orientation": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "z": {"type": "number"},
+                                "w": {"type": "number"},
+                            },
+                        },
+                    },
+                },
+                "point_stride": {"type": "integer"},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "offset": {"type": "integer"},
+                            "type": {"type": "integer"},
+                        },
+                    },
+                },
+                "data": {"type": "string", "contentEncoding": "base64"},
+            },
+        }
+
         self.foxglove_server = foxglove.start_server(
             name="go2_depth_bridge",
             host=self.foxglove_host,
@@ -242,6 +299,11 @@ class DepthBridge:
             name="foxglove.SceneUpdate",
             encoding="jsonschema",
             data=json.dumps(scene_update_schema).encode(),
+        )
+        pointcloud_schema_obj = foxglove.Schema(
+            name="foxglove.PointCloud",
+            encoding="jsonschema",
+            data=json.dumps(pointcloud_schema).encode(),
         )
         self.ch_image = foxglove.Channel(
             self.args.image_channel,
@@ -270,6 +332,13 @@ class DepthBridge:
             message_encoding="json",
             schema=scene_schema_obj,
         )
+        self.ch_pointcloud = None
+        if not self.args.no_pointcloud:
+            self.ch_pointcloud = foxglove.Channel(
+                self.args.pointcloud_topic,
+                message_encoding="json",
+                schema=pointcloud_schema_obj,
+            )
 
         print(
             "[DepthBridge] Foxglove WS started at "
@@ -285,22 +354,41 @@ class DepthBridge:
         else:
             print("[DepthBridge] Cmd dir pose topic disabled")
         print(f"[DepthBridge] Cmd arrow topic: {self.args.cmd_arrow_topic} (foxglove.SceneUpdate)")
+        if self.ch_pointcloud is not None:
+            print(
+                "[DepthBridge] Point cloud topic: "
+                f"{self.args.pointcloud_topic} (foxglove.PointCloud) "
+                f"downsample={self.args.pointcloud_downsample} max_points={self.args.pointcloud_max_points}"
+            )
+        else:
+            print("[DepthBridge] Point cloud topic disabled")
+        print(f"[DepthBridge] pose_source={self.args.pose_source}")
 
     def _init_dds(self):
         ChannelFactoryInitialize(0, self.args.net)
         self.depth_sub = ChannelSubscriber(self.args.depth_topic, DepthImage_)
         self.depth_sub.Init(self._depth_handler, 10)
-        self.lowstate_sub = ChannelSubscriber(self.args.lowstate_topic, LowStateGo)
-        self.lowstate_sub.Init(self._lowstate_handler, 10)
-        self.sport_sub = ChannelSubscriber(self.args.sport_topic, SportModeStateGo)
-        self.sport_sub.Init(self._sport_handler, 10)
+        if self.args.pose_source == "inekf":
+            self.odom_sub = ChannelSubscriber(self.args.inekf_odom_topic, OdometryGeo)
+            self.odom_sub.Init(self._odom_handler, 10)
+            print(
+                "[DepthBridge] pose_source=inekf, subscribed "
+                f"odom={self.args.inekf_odom_topic}"
+            )
+        else:
+            self.lowstate_sub = ChannelSubscriber(self.args.lowstate_topic, LowStateGo)
+            self.lowstate_sub.Init(self._lowstate_handler, 10)
+            self.sport_sub = ChannelSubscriber(self.args.sport_topic, SportModeStateGo)
+            self.sport_sub.Init(self._sport_handler, 10)
+            print(
+                "[DepthBridge] pose_source=sport, subscribed "
+                f"lowstate={self.args.lowstate_topic} sport={self.args.sport_topic}"
+            )
         self.nav_target_sub = ChannelSubscriber(self.args.nav_target_topic, NavTarget_)
         self.nav_target_sub.Init(self._nav_target_handler, 10)
         self.nav_debug_sub = ChannelSubscriber(self.args.nav_debug_topic, NavDebug_)
         self.nav_debug_sub.Init(self._nav_debug_handler, 10)
         print(f"[DepthBridge] Subscribed DDS topic: {self.args.depth_topic}")
-        print(f"[DepthBridge] Subscribed DDS topic: {self.args.lowstate_topic}")
-        print(f"[DepthBridge] Subscribed DDS topic: {self.args.sport_topic}")
         print(f"[DepthBridge] Subscribed DDS topic: {self.args.nav_target_topic}")
         print(f"[DepthBridge] Subscribed DDS topic: {self.args.nav_debug_topic}")
 
@@ -311,9 +399,108 @@ class DepthBridge:
                 self._latest_depth = depth
                 self._latest_scale = float(msg.depth_scale)
                 self._latest_stamp = time.time()
+                self._latest_depth_width = int(msg.width)
+                self._latest_depth_height = int(msg.height)
+                self._latest_depth_fx = float(msg.intrinsics.fx)
+                self._latest_depth_fy = float(msg.intrinsics.fy)
+                self._latest_depth_cx = float(msg.intrinsics.cx)
+                self._latest_depth_cy = float(msg.intrinsics.cy)
                 self._frames += 1
         except Exception as exc:
             print(f"[DepthBridge] Decode error: {exc}")
+
+    @staticmethod
+    def _quat_multiply_xyzw(q1_xyzw: np.ndarray, q2_xyzw: np.ndarray) -> np.ndarray:
+        x1, y1, z1, w1 = [float(v) for v in q1_xyzw[:4]]
+        x2, y2, z2, w2 = [float(v) for v in q2_xyzw[:4]]
+        out = np.array(
+            [
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            ],
+            dtype=np.float32,
+        )
+        n = float(np.linalg.norm(out))
+        if n <= 1e-8:
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        return (out / n).astype(np.float32)
+
+    @staticmethod
+    def _quat_xyzw_from_axis_angle(axis_xyz: np.ndarray, angle_rad: float) -> np.ndarray:
+        axis = np.asarray(axis_xyz, dtype=np.float32).ravel()[:3]
+        n = float(np.linalg.norm(axis))
+        if n <= 1e-8:
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        axis = axis / n
+        s = math.sin(0.5 * angle_rad)
+        c = math.cos(0.5 * angle_rad)
+        return np.array([axis[0] * s, axis[1] * s, axis[2] * s, c], dtype=np.float32)
+
+    @classmethod
+    def _robot_to_cam_quat_xyzw(cls) -> np.ndarray:
+        q_forward = cls._quat_xyzw_from_axis_angle(np.array([0.0, 1.0, 0.0], dtype=np.float32), 0.5 * math.pi)
+        q_ccw_90 = cls._quat_xyzw_from_axis_angle(np.array([0.0, 0.0, 1.0], dtype=np.float32), -0.5 * math.pi)
+        return cls._quat_multiply_xyzw(q_forward, q_ccw_90)
+
+    @staticmethod
+    def _quat_xyzw_to_rotmat(quat_xyzw: np.ndarray) -> np.ndarray:
+        x, y, z, w = [float(v) for v in quat_xyzw[:4]]
+        n = x * x + y * y + z * z + w * w
+        if n <= 1e-12:
+            return np.eye(3, dtype=np.float32)
+        s = 2.0 / n
+        xx, yy, zz = x * x * s, y * y * s, z * z * s
+        xy, xz, yz = x * y * s, x * z * s, y * z * s
+        wx, wy, wz = w * x * s, w * y * s, w * z * s
+        return np.array(
+            [
+                [1.0 - (yy + zz), xy - wz, xz + wy],
+                [xy + wz, 1.0 - (xx + zz), yz - wx],
+                [xz - wy, yz + wx, 1.0 - (xx + yy)],
+            ],
+            dtype=np.float32,
+        )
+
+    def _depth_to_world_points(
+        self,
+        depth_u16: np.ndarray,
+        depth_scale: float,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        robot_pos: np.ndarray,
+        robot_quat_xyzw: np.ndarray,
+    ) -> np.ndarray:
+        step = max(1, int(self.args.pointcloud_downsample))
+        depth_sub = depth_u16[::step, ::step].astype(np.float32) * float(depth_scale)
+        if depth_sub.size == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
+        rows, cols = depth_sub.shape
+        us = np.arange(0, cols * step, step, dtype=np.float32)
+        vs = np.arange(0, rows * step, step, dtype=np.float32)
+        uu, vv = np.meshgrid(us, vs)
+
+        valid = (depth_sub > float(self.args.pointcloud_min_depth)) & (depth_sub < float(self.args.pointcloud_max_depth))
+        if not np.any(valid):
+            return np.empty((0, 3), dtype=np.float32)
+
+        z = depth_sub[valid]
+        x = (uu[valid] - float(cx)) / max(float(fx), 1e-6) * z
+        y = (vv[valid] - float(cy)) / max(float(fy), 1e-6) * z
+        points_cam = np.stack([x, y, z], axis=1).astype(np.float32)
+
+        max_points = max(1, int(self.args.pointcloud_max_points))
+        if points_cam.shape[0] > max_points:
+            stride = int(math.ceil(points_cam.shape[0] / float(max_points)))
+            points_cam = points_cam[::max(stride, 1)]
+
+        q_world_cam = self._quat_multiply_xyzw(robot_quat_xyzw, self._q_robot_to_cam)
+        rot_world_cam = self._quat_xyzw_to_rotmat(q_world_cam)
+        return (points_cam @ rot_world_cam.T + robot_pos.reshape(1, 3)).astype(np.float32)
 
     def _update_orientation_from_wxyz_quat(self, quat: np.ndarray):
         if quat.shape[0] < 4:
@@ -354,6 +541,33 @@ class DepthBridge:
                     self._update_orientation_from_wxyz_quat(quat)
         except Exception as exc:
             print(f"[DepthBridge] Sport decode error: {exc}")
+
+    def _odom_handler(self, msg: OdometryGeo):
+        try:
+            pos = np.array(
+                [
+                    float(msg.pose.pose.position.x),
+                    float(msg.pose.pose.position.y),
+                    float(msg.pose.pose.position.z),
+                ],
+                dtype=np.float32,
+            )
+            qx = float(msg.pose.pose.orientation.x)
+            qy = float(msg.pose.pose.orientation.y)
+            qz = float(msg.pose.pose.orientation.z)
+            qw = float(msg.pose.pose.orientation.w)
+            quat_xyzw = np.array([qx, qy, qz, qw], dtype=np.float32)
+            norm = float(np.linalg.norm(quat_xyzw))
+            if norm <= 1e-8:
+                return
+
+            quat_xyzw = (quat_xyzw / norm).astype(np.float32)
+            quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float32)
+            with self._lock:
+                self._latest_robot_pos = pos
+                self._update_orientation_from_wxyz_quat(quat_wxyz)
+        except Exception as exc:
+            print(f"[DepthBridge] Odom decode error: {exc}")
 
     def _nav_target_handler(self, msg: NavTarget_):
         try:
@@ -444,6 +658,12 @@ class DepthBridge:
                         depth = None if self._latest_depth is None else self._latest_depth.copy()
                         scale = self._latest_scale
                         stamp_t = self._latest_stamp
+                        depth_width = int(self._latest_depth_width)
+                        depth_height = int(self._latest_depth_height)
+                        depth_fx = float(self._latest_depth_fx)
+                        depth_fy = float(self._latest_depth_fy)
+                        depth_cx = float(self._latest_depth_cx)
+                        depth_cy = float(self._latest_depth_cy)
                         frames = self._frames
                         robot_pos = self._latest_robot_pos.copy()
                         robot_yaw = float(self._latest_robot_yaw)
@@ -542,6 +762,44 @@ class DepthBridge:
                             }
                         )
 
+                        if (
+                            self.ch_pointcloud is not None
+                            and depth_width > 0
+                            and depth_height > 0
+                            and depth_fx > 0.0
+                            and depth_fy > 0.0
+                        ):
+                            world_points = self._depth_to_world_points(
+                                depth_u16=depth,
+                                depth_scale=float(scale),
+                                fx=depth_fx,
+                                fy=depth_fy,
+                                cx=depth_cx,
+                                cy=depth_cy,
+                                robot_pos=robot_pos.astype(np.float32),
+                                robot_quat_xyzw=robot_quat_xyzw.astype(np.float32),
+                            )
+                            if world_points.shape[0] > 0:
+                                cloud_bytes = world_points.astype("<f4", copy=False).tobytes()
+                                cloud_b64 = base64.b64encode(cloud_bytes).decode("ascii")
+                                self.ch_pointcloud.log(
+                                    {
+                                        "timestamp": stamp,
+                                        "frame_id": "world",
+                                        "pose": {
+                                            "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                                            "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                                        },
+                                        "point_stride": 12,
+                                        "fields": [
+                                            {"name": "x", "offset": 0, "type": 7},
+                                            {"name": "y", "offset": 4, "type": 7},
+                                            {"name": "z", "offset": 8, "type": 7},
+                                        ],
+                                        "data": cloud_b64,
+                                    }
+                                )
+
                 if now >= next_print:
                     next_print += print_dt
                     with self._lock:
@@ -561,7 +819,7 @@ class DepthBridge:
             self.close()
 
     def close(self):
-        for ch in [self.ch_image, self.ch_tf_base, self.ch_tf_target, self.ch_cmd_pose, self.ch_cmd_arrow]:
+        for ch in [self.ch_image, self.ch_tf_base, self.ch_tf_target, self.ch_cmd_pose, self.ch_cmd_arrow, self.ch_pointcloud]:
             try:
                 if ch is not None:
                     ch.close()
@@ -579,8 +837,10 @@ def parse_args():
     )
     parser.add_argument("net", type=str, help="DDS network interface for ChannelFactoryInitialize, e.g. wlp3s0")
     parser.add_argument("--depth-topic", type=str, default="debug/depth_image_noisy", help="DDS depth topic")
+    parser.add_argument("--pose-source", type=str, choices=["sport", "inekf"], default="sport", help="Robot pose source for base transform")
     parser.add_argument("--lowstate-topic", type=str, default="rt/lowstate", help="DDS lowstate topic (IMU orientation source)")
     parser.add_argument("--sport-topic", type=str, default="rt/sportmodestate", help="DDS robot state topic")
+    parser.add_argument("--inekf-odom-topic", type=str, default="rt/inekf/odom", help="DDS INEKF odometry topic")
     parser.add_argument("--nav-target-topic", type=str, default="rt/nav_target", help="DDS nav target topic")
     parser.add_argument("--nav-debug-topic", type=str, default="rt/nav_debug", help="DDS nav debug topic")
 
@@ -600,6 +860,12 @@ def parse_args():
     parser.add_argument("--cmd-arrow-shaft-diameter", type=float, default=0.03, help="Arrow shaft diameter")
     parser.add_argument("--cmd-arrow-head-length", type=float, default=0.08, help="Arrow head length")
     parser.add_argument("--cmd-arrow-head-diameter", type=float, default=0.06, help="Arrow head diameter")
+    parser.add_argument("--pointcloud-topic", type=str, default="/go2/depth/points", help="Foxglove topic for depth point cloud")
+    parser.add_argument("--no-pointcloud", action="store_true", help="Disable depth point cloud publishing")
+    parser.add_argument("--pointcloud-downsample", type=int, default=2, help="Point cloud pixel stride")
+    parser.add_argument("--pointcloud-max-points", type=int, default=20000, help="Point cloud max points per frame")
+    parser.add_argument("--pointcloud-min-depth", type=float, default=0.25, help="Point cloud min depth in meters")
+    parser.add_argument("--pointcloud-max-depth", type=float, default=10.0, help="Point cloud max depth in meters")
 
     parser.add_argument("--publish-hz", type=float, default=15.0, help="Foxglove publish rate")
     parser.add_argument("--print-hz", type=float, default=1.0, help="Console print rate")
