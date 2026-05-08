@@ -362,28 +362,15 @@ class DepthBridge:
             )
         else:
             print("[DepthBridge] Point cloud topic disabled")
-        print(f"[DepthBridge] pose_source={self.args.pose_source}")
+        print(f"[DepthBridge] base_pose_topic={self.args.base_pose_topic}")
 
     def _init_dds(self):
         ChannelFactoryInitialize(0, self.args.net)
         self.depth_sub = ChannelSubscriber(self.args.depth_topic, DepthImage_)
         self.depth_sub.Init(self._depth_handler, 10)
-        if self.args.pose_source == "inekf":
-            self.odom_sub = ChannelSubscriber(self.args.inekf_odom_topic, OdometryGeo)
-            self.odom_sub.Init(self._odom_handler, 10)
-            print(
-                "[DepthBridge] pose_source=inekf, subscribed "
-                f"odom={self.args.inekf_odom_topic}"
-            )
-        else:
-            self.lowstate_sub = ChannelSubscriber(self.args.lowstate_topic, LowStateGo)
-            self.lowstate_sub.Init(self._lowstate_handler, 10)
-            self.sport_sub = ChannelSubscriber(self.args.sport_topic, SportModeStateGo)
-            self.sport_sub.Init(self._sport_handler, 10)
-            print(
-                "[DepthBridge] pose_source=sport, subscribed "
-                f"lowstate={self.args.lowstate_topic} sport={self.args.sport_topic}"
-            )
+        self.base_pose_sub = ChannelSubscriber(self.args.base_pose_topic, OdometryGeo)
+        self.base_pose_sub.Init(self._odom_handler, 10)
+        print(f"[DepthBridge] subscribed base_pose={self.args.base_pose_topic}")
         self.nav_target_sub = ChannelSubscriber(self.args.nav_target_topic, NavTarget_)
         self.nav_target_sub.Init(self._nav_target_handler, 10)
         self.nav_debug_sub = ChannelSubscriber(self.args.nav_debug_topic, NavDebug_)
@@ -837,10 +824,7 @@ def parse_args():
     )
     parser.add_argument("net", type=str, help="DDS network interface for ChannelFactoryInitialize, e.g. wlp3s0")
     parser.add_argument("--depth-topic", type=str, default="debug/depth_image_noisy", help="DDS depth topic")
-    parser.add_argument("--pose-source", type=str, choices=["sport", "inekf"], default="sport", help="Robot pose source for base transform")
-    parser.add_argument("--lowstate-topic", type=str, default="rt/lowstate", help="DDS lowstate topic (IMU orientation source)")
-    parser.add_argument("--sport-topic", type=str, default="rt/sportmodestate", help="DDS robot state topic")
-    parser.add_argument("--inekf-odom-topic", type=str, default="rt/inekf/odom", help="DDS INEKF odometry topic")
+    parser.add_argument("--base-pose-topic", type=str, default="rt/base_pose", help="DDS unified base pose topic")
     parser.add_argument("--nav-target-topic", type=str, default="rt/nav_target", help="DDS nav target topic")
     parser.add_argument("--nav-debug-topic", type=str, default="rt/nav_debug", help="DDS nav debug topic")
 

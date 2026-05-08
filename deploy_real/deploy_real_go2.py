@@ -38,15 +38,24 @@ class Controller:
             self.position = np.zeros(3, dtype=np.float32)
             self.velocity = np.zeros(3, dtype=np.float32)
 
-    def __init__(self, config: Config, use_mujoco: bool = False, keyboard: bool = False, keyboard_topic: str = "rt/wireless_remote") -> None:
+    def __init__(
+        self,
+        config: Config,
+        use_mujoco: bool = False,
+        keyboard: bool = False,
+        keyboard_topic: str = "rt/wireless_remote",
+        base_pose_topic: str = "rt/base_pose",
+    ) -> None:
         self.config = config
         self.use_mujoco = use_mujoco
         self.keyboard_mode = keyboard
         self.keyboard_topic = keyboard_topic
+        self.base_pose_topic = base_pose_topic
         self.remote_controller = RemoteController()
         self._keyboard_lock = threading.Lock()
         self._keyboard_target_update = None
         self._keyboard_rx_count = 0
+        self._last_lowstate_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
         self.policy = torch.jit.load(config.policy_path)
         self.actor = self.policy.actor
@@ -86,6 +95,8 @@ class Controller:
         self.nav_debug_publisher_.Init()
         self.nav_target_publisher_ = ChannelPublisher("rt/nav_target", NavTarget_)
         self.nav_target_publisher_.Init()
+        self.base_pose_publisher_ = ChannelPublisher(self.base_pose_topic, OdometryGeo)
+        self.base_pose_publisher_.Init()
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
@@ -93,6 +104,7 @@ class Controller:
             self.keyboard_subscriber = ChannelSubscriber(self.keyboard_topic, KeyboardCommand_)
             self.keyboard_subscriber.Init(self.KeyboardCmdHandler, 10)
             print(f"[Controller] Keyboard DDS enabled, subscribed: {self.keyboard_topic}")
+        print(f"[Controller] Unified base pose publishing: {self.base_pose_topic}")
         if use_mujoco:
             self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
             self.highstate_subscriber.Init(self.HighStateGoHandler, 10)
@@ -134,11 +146,22 @@ class Controller:
 
     def LowStateGoHandler(self, msg: LowStateGo):
         self.low_state = msg
+        try:
+            q = np.asarray(msg.imu_state.quaternion, dtype=np.float32).ravel()
+            if q.shape[0] >= 4:
+                # Unitree IMU quaternion is wxyz; Odometry uses xyzw.
+                quat = np.array([q[1], q[2], q[3], q[0]], dtype=np.float32)
+                norm = float(np.linalg.norm(quat))
+                if norm > 1e-6:
+                    self._last_lowstate_quat_xyzw = (quat / norm).astype(np.float32)
+        except Exception:
+            pass
         if not self.keyboard_mode:
             self.remote_controller.set(self.low_state.wireless_remote)
 
     def HighStateGoHandler(self, msg: SportModeStateGo):
         self.high_state = msg
+        self._publish_base_pose_from_sport(msg)
 
     def KeyboardCmdHandler(self, msg: KeyboardCommand_):
         buttons = [int(v) for v in msg.buttons[:16]]
@@ -166,6 +189,66 @@ class Controller:
             [msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z],
             dtype=np.float32,
         )
+        self._publish_base_pose_from_odom(msg)
+
+    def _make_base_pose_msg(
+        self,
+        position_xyz: np.ndarray,
+        velocity_xyz: np.ndarray,
+        quat_xyzw: np.ndarray,
+    ):
+        msg = nav_msgs_msg_dds__Odometry_()
+        now = time.time()
+        stamp_ns = int(now * 1e9)
+        msg.header.stamp.sec = int(stamp_ns // 1_000_000_000)
+        msg.header.stamp.nanosec = int(stamp_ns % 1_000_000_000)
+        msg.header.frame_id = "world"
+        msg.child_frame_id = "base"
+
+        msg.pose.pose.position.x = float(position_xyz[0])
+        msg.pose.pose.position.y = float(position_xyz[1])
+        msg.pose.pose.position.z = float(position_xyz[2])
+
+        msg.pose.pose.orientation.x = float(quat_xyzw[0])
+        msg.pose.pose.orientation.y = float(quat_xyzw[1])
+        msg.pose.pose.orientation.z = float(quat_xyzw[2])
+        msg.pose.pose.orientation.w = float(quat_xyzw[3])
+
+        msg.twist.twist.linear.x = float(velocity_xyz[0])
+        msg.twist.twist.linear.y = float(velocity_xyz[1])
+        msg.twist.twist.linear.z = float(velocity_xyz[2])
+        msg.twist.twist.angular.x = 0.0
+        msg.twist.twist.angular.y = 0.0
+        msg.twist.twist.angular.z = 0.0
+        return msg
+
+    def _publish_base_pose_from_odom(self, msg: OdometryGeo):
+        self.base_pose_publisher_.Write(msg)
+
+    def _publish_base_pose_from_sport(self, msg: SportModeStateGo):
+        position = np.asarray(getattr(msg, "position", [0.0, 0.0, 0.0]), dtype=np.float32).ravel()
+        if position.shape[0] < 3:
+            position = np.zeros(3, dtype=np.float32)
+        velocity = np.asarray(getattr(msg, "velocity", [0.0, 0.0, 0.0]), dtype=np.float32).ravel()
+        if velocity.shape[0] < 3:
+            velocity = np.zeros(3, dtype=np.float32)
+
+        quat_xyzw = self._last_lowstate_quat_xyzw.copy()
+        try:
+            imu = getattr(msg, "imu_state", None)
+            if imu is not None and hasattr(imu, "quaternion"):
+                q = np.asarray(imu.quaternion, dtype=np.float32).ravel()
+                if q.shape[0] >= 4:
+                    # Sport IMU quaternion follows Unitree convention wxyz.
+                    cand = np.array([q[1], q[2], q[3], q[0]], dtype=np.float32)
+                    n = float(np.linalg.norm(cand))
+                    if n > 1e-6:
+                        quat_xyzw = (cand / n).astype(np.float32)
+        except Exception:
+            pass
+
+        out = self._make_base_pose_msg(position[:3], velocity[:3], quat_xyzw)
+        self.base_pose_publisher_.Write(out)
 
     def update_control_input(self):
         if self.keyboard_mode:
@@ -225,6 +308,7 @@ if __name__ == "__main__":
     parser.add_argument("--mujoco", action="store_true", help="use mujoco simulation")
     parser.add_argument("--keyboard", action="store_true", help="use keyboard DDS topic for state transitions and velocity commands")
     parser.add_argument("--keyboard-topic", type=str, default="rt/wireless_remote", help="DDS topic for keyboard command stream")
+    parser.add_argument("--base-pose-topic", type=str, default="rt/base_pose", help="Unified base pose output topic for all consumers")
     args = parser.parse_args()
 
     config_path = f"deploy_real/configs/{args.config}"
@@ -237,6 +321,7 @@ if __name__ == "__main__":
         use_mujoco=args.mujoco,
         keyboard=args.keyboard,
         keyboard_topic=args.keyboard_topic,
+        base_pose_topic=args.base_pose_topic,
     )
 
     if not args.mujoco:
