@@ -53,7 +53,6 @@ class Controller:
         self.base_pose_topic = base_pose_topic
         self.remote_controller = RemoteController()
         self._keyboard_lock = threading.Lock()
-        self._keyboard_target_update = None
         self._keyboard_rx_count = 0
         self._last_lowstate_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
@@ -100,10 +99,14 @@ class Controller:
 
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowStateGo)
         self.lowstate_subscriber.Init(self.LowStateGoHandler, 10)
+        
+        # Always subscribe to keyboard topic for target position updates
+        self.keyboard_subscriber = ChannelSubscriber(self.keyboard_topic, KeyboardCommand_)
+        self.keyboard_subscriber.Init(self.KeyboardCmdHandler, 10)
         if self.keyboard_mode:
-            self.keyboard_subscriber = ChannelSubscriber(self.keyboard_topic, KeyboardCommand_)
-            self.keyboard_subscriber.Init(self.KeyboardCmdHandler, 10)
-            print(f"[Controller] Keyboard DDS enabled, subscribed: {self.keyboard_topic}")
+            print(f"[Controller] Keyboard DDS enabled (full control), subscribed: {self.keyboard_topic}")
+        else:
+            print(f"[Controller] Keyboard DDS enabled (target position only), subscribed: {self.keyboard_topic}")
         print(f"[Controller] Unified base pose publishing: {self.base_pose_topic}")
         if use_mujoco:
             self.highstate_subscriber = ChannelSubscriber("rt/sportmodestate", SportModeStateGo)
@@ -164,20 +167,36 @@ class Controller:
         self._publish_base_pose_from_sport(msg)
 
     def KeyboardCmdHandler(self, msg: KeyboardCommand_):
-        buttons = [int(v) for v in msg.buttons[:16]]
-        with self._keyboard_lock:
-            self.remote_controller.set_axes(
-                lx=float(msg.lx),
-                ly=float(msg.ly),
-                rx=float(msg.rx),
-                ry=float(msg.ry),
-            )
-            self.remote_controller.set_buttons(buttons)
-            self._keyboard_rx_count += 1
-            if bool(msg.has_target_update):
+        # Always handle target position update (regardless of keyboard mode)
+        target_update = None
+        try:
+            if bool(getattr(msg, "has_target_update", False)):
                 target = np.asarray(msg.target_world, dtype=np.float32).ravel()
                 if target.shape[0] >= 3:
-                    self._keyboard_target_update = target[:3].copy()
+                    target_update = target[:3].copy()
+        except Exception:
+            pass
+        
+        if target_update is not None:
+            self.navigation_manager.set_target_position(target_update)
+            self.publish_target_update(target_update)
+            print(
+                "[Navigation] Target updated from keyboard DDS: "
+                f"({target_update[0]:.3f}, {target_update[1]:.3f}, {target_update[2]:.3f})"
+            )
+        
+        # Handle remote controller input only in keyboard mode
+        if self.keyboard_mode:
+            buttons = [int(v) for v in msg.buttons[:16]]
+            with self._keyboard_lock:
+                self.remote_controller.set_axes(
+                    lx=float(msg.lx),
+                    ly=float(msg.ly),
+                    rx=float(msg.rx),
+                    ry=float(msg.ry),
+                )
+                self.remote_controller.set_buttons(buttons)
+                self._keyboard_rx_count += 1
 
     def OdomHandler(self, msg: OdometryGeo):
         self.inekf_odom = msg
@@ -251,17 +270,6 @@ class Controller:
         self.base_pose_publisher_.Write(out)
 
     def update_control_input(self):
-        if self.keyboard_mode:
-            with self._keyboard_lock:
-                target_update = self._keyboard_target_update
-                self._keyboard_target_update = None
-            if target_update is not None:
-                self.navigation_manager.set_target_position(target_update)
-                self.publish_target_update(target_update)
-                print(
-                    "[Navigation] Target updated from keyboard DDS: "
-                    f"({target_update[0]:.3f}, {target_update[1]:.3f}, {target_update[2]:.3f})"
-                )
         self.navigation_manager.update_control_source(self.remote_controller.button)
 
     def publish_target_update(self, target_world):

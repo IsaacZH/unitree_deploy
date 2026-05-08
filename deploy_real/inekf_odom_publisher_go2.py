@@ -401,7 +401,7 @@ class InekfOdomPublisher:
 				"translation": {
 					"x": float(est.position[0]),
 					"y": float(est.position[1]),
-					"z": float(est.position[2]),
+					"z": 0.3,
 				},
 				"rotation": {
 					"x": float(est.quaternion_wxyz[1]),
@@ -424,7 +424,7 @@ class InekfOdomPublisher:
 
 		msg.pose.pose.position.x = float(est.position[0])
 		msg.pose.pose.position.y = float(est.position[1])
-		msg.pose.pose.position.z = float(est.position[2])
+		msg.pose.pose.position.z = 0.3
 
 		msg.pose.pose.orientation.w = float(est.quaternion_wxyz[0])
 		msg.pose.pose.orientation.x = float(est.quaternion_wxyz[1])
@@ -532,7 +532,7 @@ def parse_args():
 	parser.add_argument(
 		"--urdf-path",
 		type=str,
-		default="/home/isaac/deploy_him_py/go2_description/urdf/go2_description.urdf",
+		default="./go2_description/urdf/go2_description.urdf",
 		help="Fallback URDF path used when unitree_description.loader.loadGo2 is unavailable.",
 	)
 	return parser.parse_args()

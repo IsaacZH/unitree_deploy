@@ -55,7 +55,7 @@ pip install -r requirements.txt
 推荐从 conda-forge 安装，版本匹配更稳定：
 
 ```bash
-conda install -c conda-forge pinocchio eigenpy cmake ninja pkg-config -y
+conda install -c conda-forge pinocchio==3.9.0 eigenpy cmake ninja pkg-config -y
 ```
 
 ### 4. 编译并安装 inekf Python 绑定
@@ -116,13 +116,13 @@ python deploy_real/inekf_odom_publisher_go2.py wlp3s0 \
 键盘发布器：
 
 ```bash
-python deploy_real/keyboard/keyboard_dds_publisher.py wlp3s0 --topic rt/wireless_remote
+python deploy_real/keyboard/keyboard_dds_publisher.py enp5s0 --topic rt/wireless_remote
 ```
 
 主控制（Mujoco 链路）：
 
 ```bash
-python deploy_real/deploy_real_go2.py wlp3s0 go2.yaml --keyboard --mujoco
+python deploy_real/deploy_real_go2.py enp5s0 go2.yaml --keyboard --mujoco
 ```
 
 ### 8. 常见问题

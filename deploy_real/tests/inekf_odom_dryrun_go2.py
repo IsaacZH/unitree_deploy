@@ -461,7 +461,7 @@ class InekfDryRunRunner:
             "translation": {
                 "x": float(inekf_pos[0]),
                 "y": float(inekf_pos[1]),
-                "z": float(inekf_pos[2]),
+                "z": 0.3,
             },
             "rotation": {
                 "x": float(inekf_quat[1]),  # wxyz -> xyzw

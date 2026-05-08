@@ -17,7 +17,7 @@ depth_camera:
   feature_dim: 64
   device: "cpu"
   # Noise and visualization
-  enable_noise: true         # Set to true to inject stereo depth noise
+  enable_noise: false         # Set to true to inject stereo depth noise
   focal_length: 391.9765      # D435i focal length (pixels)
   baseline: 0.049974          # D435i stereo baseline (meters)
   use_jit_precompiled: false  # JIT compilation for speed (experimental)
