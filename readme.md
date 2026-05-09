@@ -214,7 +214,7 @@ python deploy_real/bridge/lan_dds_bridge_robot.py wlp3s0 --host 0.0.0.0 --port 1
 
 ```bash
 cd unitree_deploy
-python deploy_real/bridge/lan_dds_bridge_operator.py wlp3s0 --robot-host 192.168.1.106 --robot-port 16789
+python deploy_real/bridge/lan_dds_bridge_operator.py wlp3s0 --robot-host 192.168.123.99 --robot-port 16789
 ```
 
 然后在操作员侧继续运行原有工具：

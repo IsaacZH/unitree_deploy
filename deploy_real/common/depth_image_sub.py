@@ -262,12 +262,14 @@ class DepthImageObserver:
 
         # Initialise cache with zeros so callers always get a valid array
         self._latest_feature: np.ndarray = np.zeros(self._encoded_flat_dim, dtype=np.float32)
+        self._zero_feature: np.ndarray = np.zeros(self._encoded_flat_dim, dtype=np.float32)
         self._latest_depth_image: np.ndarray | None = None
         self._latest_depth_scale: float = 0.0
         self._latest_viz_depth: torch.Tensor | None = None  # For visualization publish (raw or noisy)
         self._latest_intrinsics: DepthIntrinsics_ | None = None
         self._frame_version: int = 0
         self._encoded_version: int = -1
+        self._viz_version: int = -1
         self._lock = threading.Lock()
 
         self._viz_publisher = None
@@ -388,14 +390,27 @@ class DepthImageObserver:
     # Public API
     # ------------------------------------------------------------------
 
-    def get_latest(self) -> np.ndarray:
-        """Return latest flattened encoded depth feature (copy)."""
+    def get_latest(self, encode: bool = True) -> np.ndarray:
+        """Return latest depth feature.
+
+        Parameters
+        ----------
+        encode: If True, run depth encoder and return encoded feature.
+                If False, only process noise/viz publish path and return zeros.
+        """
         with self._lock:
-            if self._encoded_version == self._frame_version:
+            if self._latest_depth_image is None:
+                self._publish_noisy_depth()
+                return self._latest_feature.copy() if encode else self._zero_feature.copy()
+
+            if encode and self._encoded_version == self._frame_version:
                 self._publish_noisy_depth()
                 return self._latest_feature.copy()
-            if self._latest_depth_image is None:
-                return self._latest_feature.copy()
+
+            if (not encode) and self._viz_version == self._frame_version:
+                self._publish_noisy_depth()
+                return self._zero_feature.copy()
+
             depth_image = self._latest_depth_image.copy()
             depth_scale = self._latest_depth_scale
             frame_version = self._frame_version
@@ -408,6 +423,12 @@ class DepthImageObserver:
         
         # Publish noisy depth for external visualizer if enabled (non-blocking)
         self._publish_noisy_depth()
+
+        if not encode:
+            with self._lock:
+                if frame_version >= self._viz_version:
+                    self._viz_version = frame_version
+            return self._zero_feature.copy()
         
         # Encode to feature
         with torch.no_grad():
@@ -423,4 +444,6 @@ class DepthImageObserver:
             if frame_version >= self._encoded_version:
                 self._latest_feature = feature
                 self._encoded_version = frame_version
+            if frame_version >= self._viz_version:
+                self._viz_version = frame_version
             return self._latest_feature.copy()

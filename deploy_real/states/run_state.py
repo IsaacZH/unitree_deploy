@@ -82,6 +82,7 @@ class RunState(BaseState):
 
     def _build_raw_state(self):
         """Build raw state object from robot data."""
+        nav_active = self.controller.navigation_manager.use_navigation_command()
         return RawState(
             remote=self.controller.remote_controller,
             imu=self.controller.low_state.imu_state,
@@ -91,7 +92,7 @@ class RunState(BaseState):
             last_action=self.controller.obs_manager.last_action,
             nav_last_action=getattr(self.controller, "nav_last_action", None),
             depth_feature=(
-            self.controller.depth_observer.get_latest()
+            self.controller.depth_observer.get_latest(encode=nav_active)
             if self.controller.depth_observer is not None
             else None
             ),
