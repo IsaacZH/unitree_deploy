@@ -13,7 +13,7 @@
 
 ```bash
 git clone --recurse-submodules https://github.com/IsaacZH/unitree_deploy.git
-cd /home/isaac/deploy_him_py
+cd unitree_deploy
 git submodule update --init --recursive
 ```
 
@@ -26,7 +26,7 @@ git config --global submodule.recurse true
 如果你是旧仓库目录（非新 clone），执行以下命令补齐 submodule：
 
 ```bash
-cd /home/isaac/deploy_him_py
+cd unitree_deploy
 git submodule sync --recursive
 git submodule update --init --recursive
 ```
@@ -45,7 +45,7 @@ conda activate unitree_sdk2
 在仓库根目录执行：
 
 ```bash
-cd /home/isaac/deploy_him_py
+cd unitree_deploy
 pip install -r requirements.txt
 ```
 
@@ -62,7 +62,7 @@ conda install -c conda-forge pinocchio=3.9.0 eigenpy cmake ninja pkg-config -y
 本仓库已带源码 [third_party/invariant-ekf](third_party/invariant-ekf)。
 
 ```bash
-cd /home/isaac/deploy_him_py/third_party/invariant-ekf
+cd third_party/invariant-ekf
 
 cmake -S . -B build \
 	-G Ninja \
@@ -80,6 +80,56 @@ cmake --install build
 - 使用 CMAKE_INSTALL_PREFIX=$CONDA_PREFIX 可避免写入系统目录。
 - 安装后 inekf 模块会被放到当前 Python 环境 site-packages。
 
+### 4.1 Jetson / aarch64 安装补充
+
+如果在 Jetson 上遇到以下错误：
+
+```text
+file INSTALL cannot find .../build/bindings/inekf/inekf_pywrap.cpython-311-aarch64-linux-gnu.so
+```
+
+通常表示 Python 绑定目标没有成功编译。建议按以下顺序处理：
+
+```bash
+conda activate unitree_sdk2
+
+# 先确认 Python 与当前环境一致
+python -c "import sys; print(sys.executable); print(sys.version)"
+
+# Jetson 基础构建工具
+sudo apt update
+sudo apt install -y build-essential cmake ninja-build pkg-config
+
+# 清理旧构建目录并重配
+cd third_party/invariant-ekf
+rm -rf build
+cmake -S . -B build \
+	-G Ninja \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DBUILD_PYTHON_INTERFACE=ON \
+	-DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" \
+	-DPython3_EXECUTABLE="$(which python)"
+
+# 先单独编译 Python 绑定目标
+cmake --build build --target inekf_pywrap -j2
+
+# 确认 .so 已生成
+ls -lh build/bindings/inekf/
+
+# 再执行安装
+cmake --install build
+```
+
+验证：
+
+```bash
+python - <<'PY'
+import inekf
+from inekf import InEKF, Kinematics, NoiseParams, RobotState
+print('OK: inekf import success on aarch64')
+PY
+```
+
 ### 5. 依赖自检
 
 ```bash
@@ -96,7 +146,7 @@ PY
 文件位置：[deploy_real/inekf_odom_publisher_go2.py](deploy_real/inekf_odom_publisher_go2.py)
 
 ```bash
-cd /home/isaac/deploy_him_py
+cd unitree_deploy
 python deploy_real/inekf_odom_publisher_go2.py wlp3s0 \
 	--odom-topic rt/inekf/odom \
 	--world-frame world \
@@ -107,7 +157,7 @@ python deploy_real/inekf_odom_publisher_go2.py wlp3s0 \
 
 ```bash
 python deploy_real/inekf_odom_publisher_go2.py wlp3s0 \
-	--urdf-path /home/isaac/deploy_him_py/go2_description/urdf/go2_description.urdf
+	--urdf-path go2_description/urdf/go2_description.urdf
 ```
 
 ### 7. 常用联调命令
@@ -156,22 +206,22 @@ python deploy_real/deploy_real_go2.py wlp3s0 go2.yaml --keyboard --mujoco
 机器人侧启动（server）：
 
 ```bash
-cd /home/isaac/deploy_him_py
+cd unitree_deploy
 python deploy_real/bridge/lan_dds_bridge_robot.py wlp3s0 --host 0.0.0.0 --port 16789 --depth-hz 12 --compress-depth
 ```
 
 操作员侧启动（client）：
 
 ```bash
-cd /home/isaac/deploy_him_py
-python deploy_real/bridge/lan_dds_bridge_operator.py wlp3s0 --robot-host <robot_lan_ip> --robot-port 16789
+cd unitree_deploy
+python deploy_real/bridge/lan_dds_bridge_operator.py wlp3s0 --robot-host 192.168.1.106 --robot-port 16789
 ```
 
 然后在操作员侧继续运行原有工具：
 
 ```bash
 python deploy_real/keyboard/keyboard_dds_publisher.py wlp3s0 --topic rt/wireless_remote
-python -m rerun_viz.app.live_bridge --net wlp3s0 --deploy-real-dir /home/isaac/deploy_him_py/deploy_real
+python -m rerun_viz.app.live_bridge --net wlp3s0 --deploy-real-dir ./deploy_real
 ```
 
 稳定性策略（当前实现）：
