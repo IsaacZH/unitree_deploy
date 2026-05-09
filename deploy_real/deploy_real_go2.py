@@ -137,6 +137,8 @@ class Controller:
                 focal_length=dc.get("focal_length", None),
                 baseline=dc.get("baseline", None),
                 use_jit_precompiled=dc.get("use_jit_precompiled", False),
+                use_amp=dc.get("use_amp", False),
+                compile_encoder=dc.get("compile_encoder", False),
                 visualize_depth=dc.get("visualize_depth", False),
                 visualize_topic=dc.get("visualize_topic", "rt/depth_image_noisy"),
             )

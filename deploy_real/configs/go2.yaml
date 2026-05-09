@@ -21,6 +21,8 @@ depth_camera:
   focal_length: 391.9765      # D435i focal length (pixels)
   baseline: 0.049974          # D435i stereo baseline (meters)
   use_jit_precompiled: false  # JIT compilation for speed (experimental)
+  use_amp: false              # FP16 autocast (Jetson Orin Tensor Core; set true when device: "cuda:0")
+  compile_encoder: false      # torch.compile encoder (reduces dispatch overhead; requires PyTorch >= 2.0)
   visualize_depth: true      # Set to true to publish noisy depth DDS for external visualization
   visualize_topic: "debug/depth_image_noisy"  # DDS topic for noisy depth visualization stream
 

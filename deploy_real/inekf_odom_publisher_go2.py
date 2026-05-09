@@ -32,6 +32,7 @@ class InekfOdomEstimator:
 	def __init__(
 		self,
 		robot_freq: float = 500.0,
+		inekf_freq: float = 0.0,
 		base_frame: str = "base",
 		contact_threshold: float = 20.0,
 		gyroscope_noise: float = 0.01,
@@ -52,7 +53,8 @@ class InekfOdomEstimator:
 		self.pin = pin
 		self.Kinematics = Kinematics
 
-		self.dt = 1.0 / float(robot_freq)
+		_eff_freq = float(inekf_freq) if inekf_freq > 0 else float(robot_freq)
+		self.dt = 1.0 / _eff_freq
 		self.base_frame = base_frame
 		self.contact_threshold = float(contact_threshold)
 		self.pause = True
@@ -294,9 +296,13 @@ class InekfOdomPublisher:
 		self._pub_ready = False
 		self.foxglove_server = None
 		self.foxglove_channel = None
+		_skip = max(1, round(float(args.robot_freq) / float(args.inekf_freq))) if args.inekf_freq > 0 else 1
+		self._inekf_skip = _skip
+		self._inekf_counter = _skip  # start at skip so first message is always processed
 
 		self.estimator = InekfOdomEstimator(
 			robot_freq=args.robot_freq,
+			inekf_freq=args.inekf_freq,
 			base_frame=args.base_frame,
 			contact_threshold=args.contact_threshold,
 			gyroscope_noise=args.gyroscope_noise,
@@ -445,6 +451,11 @@ class InekfOdomPublisher:
 		self.low_state = msg
 		self.msg_count += 1
 
+		self._inekf_counter += 1
+		if self._inekf_counter < self._inekf_skip:
+			return
+		self._inekf_counter = 0
+
 		est = self.estimator.update(msg)
 		if est is None:
 			return
@@ -514,6 +525,11 @@ def parse_args():
 	parser.add_argument("--foxglove-topic", type=str, default="/go2/tf/inekf", help="Foxglove topic for transform")
 
 	parser.add_argument("--robot-freq", type=float, default=500.0)
+	parser.add_argument(
+		"--inekf-freq", type=float, default=0.0,
+		help="InEKF update rate in Hz; 0 = same as --robot-freq (500 Hz by default). "
+		     "Set lower (e.g. 250) to reduce Jetson CPU load; the filter dt is adjusted automatically.",
+	)
 	parser.add_argument("--base-frame", type=str, default="base")
 	parser.add_argument("--contact-threshold", type=float, default=20.0)
 

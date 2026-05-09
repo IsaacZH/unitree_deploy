@@ -178,6 +178,8 @@ class DepthImageObserver:
         focal_length: float | None = None,
         baseline: float | None = None,
         use_jit_precompiled: bool = False,
+        use_amp: bool = False,
+        compile_encoder: bool = False,
         visualize_depth: bool = False,
         visualize_topic: str = "rt/depth_image_noisy",
     ):
@@ -196,6 +198,8 @@ class DepthImageObserver:
         focal_length:      Camera focal length in pixels (required if enable_noise=True)
         baseline:          Stereo baseline in metres (required if enable_noise=True)
         use_jit_precompiled: If True, use JIT-compiled encoder for speed (default False)
+        use_amp:            If True, use FP16 autocast during encoder inference (Jetson Orin Tensor Core)
+        compile_encoder:    If True, apply torch.compile to encoder after loading (PyTorch >= 2.0)
         visualize_depth:   If True, publish noisy depth frames to DDS for external visualization
         visualize_topic:   DDS topic used to publish noisy depth frames when visualize_depth=True
         """
@@ -206,6 +210,7 @@ class DepthImageObserver:
         self.feature_dim = feature_dim
         self.enable_noise = enable_noise
         self.use_jit_precompiled = use_jit_precompiled
+        self.use_amp = use_amp
         self.visualize_depth = visualize_depth
         self.visualize_topic = visualize_topic
 
@@ -239,6 +244,13 @@ class DepthImageObserver:
         }
         self._encoder.load_state_dict(encoder_keys, strict=True)
         print(f"[DepthImageObserver] Loaded encoder from: {encoder_path}")
+
+        if compile_encoder:
+            try:
+                self._encoder = torch.compile(self._encoder, mode="reduce-overhead")
+                print("[DepthImageObserver] Encoder compiled with torch.compile (mode=reduce-overhead).")
+            except Exception as exc:
+                print(f"[DepthImageObserver] torch.compile skipped: {exc}")
 
         # Infer encoded map shape from target resolution so output dim matches
         # training-style flattened feature map.
@@ -399,8 +411,12 @@ class DepthImageObserver:
         
         # Encode to feature
         with torch.no_grad():
-            feat_map = self._encoder(depth_tensor)        # [1, C, H', W']
-            feat = feat_map.contiguous().view(-1)         # [C * H' * W']
+            if self.use_amp and self.device.type == "cuda":
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    feat_map = self._encoder(depth_tensor)   # [1, C, H', W']
+            else:
+                feat_map = self._encoder(depth_tensor)       # [1, C, H', W']
+            feat = feat_map.contiguous().view(-1).float()    # [C * H' * W'] fp32
         feature = feat.cpu().numpy().astype(np.float32)
 
         with self._lock:
