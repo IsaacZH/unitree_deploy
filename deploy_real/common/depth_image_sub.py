@@ -324,6 +324,10 @@ class DepthImageObserver:
 
         try:
             viz_np = self._latest_viz_depth[0, 0].detach().cpu().numpy()
+            # Enforce deploy-side depth validity before DDS publish:
+            # values outside [min_depth, max_depth] are set to zero.
+            valid = (viz_np >= float(self.min_depth)) & (viz_np <= float(self.max_depth))
+            viz_np = np.where(valid, viz_np, 0.0)
             depth_uint16 = np.clip(np.rint(viz_np / 0.001), 0, np.iinfo(np.uint16).max).astype(np.uint16)
             height, width = depth_uint16.shape
 
