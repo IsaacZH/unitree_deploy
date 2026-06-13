@@ -1,4 +1,6 @@
-## deploy_him_py 环境配置与运行说明
+https://github.com/user-attachments/assets/25d381c2-5433-433e-bbe4-f088c45ff27b
+
+## 环境配置与运行说明
 
 本文档补充 [deploy_real/inekf_odom_publisher_go2.py](deploy_real/inekf_odom_publisher_go2.py) 所需环境，重点包含以下 Python 依赖：
 
